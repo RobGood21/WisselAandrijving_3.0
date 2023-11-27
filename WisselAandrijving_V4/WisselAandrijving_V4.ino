@@ -1,15 +1,21 @@
 /*
  Name:		WisselAandrijving_V4.ino
  Created:	11/26/2023 4:27:11 PM
- Author:	gebruiker
+ Author:	Rob Antonisse
+
+ Versie 4
+
 */
 
-// the setup function runs once when you press reset or power the board
+//libraries
+#include <EEPROM.h>
+#include <NmraDcc.h>
 void setup() {
+	Serial.begin(9600);
 
 }
 
-// the loop function runs over and over again until power down or reset
+
 void loop() {
   
 }

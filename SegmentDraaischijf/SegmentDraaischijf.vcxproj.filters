@@ -15,10 +15,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="WisselAandrijving_V4.ino" />
+    <ClCompile Include="SegmentDraaischijf.ino" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="__vm\.WisselAandrijving_V4.vsarduino.h">
+    <ClInclude Include="__vm\.SegmentDraaischijf.vsarduino.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

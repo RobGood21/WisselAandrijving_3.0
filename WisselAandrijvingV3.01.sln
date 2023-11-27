@@ -7,6 +7,12 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WisselAandrijving_V3.01", "
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WisselAandrijving_V4", "WisselAandrijving_V4\WisselAandrijving_V4.vcxproj", "{6F99FD1B-BDFE-44DE-9C8C-82B812718E8E}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NmraDcc-master-2.0.8", "Libraries\NmraDcc-master\2.0.8\NmraDcc-master\NmraDcc-master-2.0.8.vcxitems", "{907AD1CF-9129-4132-B6D8-F512767C2782}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "EEPROM-2.0", "Libraries\EEPROM\2.0\EEPROM\EEPROM-2.0.vcxitems", "{A7691A14-D7DA-48E4-BAAB-0B4917E7FD7C}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SegmentDraaischijf", "SegmentDraaischijf\SegmentDraaischijf.vcxproj", "{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|ARM = Debug|ARM
@@ -47,6 +53,24 @@ Global
 		{6F99FD1B-BDFE-44DE-9C8C-82B812718E8E}.Release|x86.ActiveCfg = Release|ARM
 		{6F99FD1B-BDFE-44DE-9C8C-82B812718E8E}.Release|x86.Build.0 = Release|ARM
 		{6F99FD1B-BDFE-44DE-9C8C-82B812718E8E}.Release|x86.Deploy.0 = Release|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|ARM.ActiveCfg = Debug|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|ARM.Build.0 = Debug|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|ARM.Deploy.0 = Debug|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|ARM64.Build.0 = Debug|ARM64
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|ARM64.Deploy.0 = Debug|ARM64
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|x86.ActiveCfg = Debug|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|x86.Build.0 = Debug|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Debug|x86.Deploy.0 = Debug|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|ARM.ActiveCfg = Release|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|ARM.Build.0 = Release|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|ARM.Deploy.0 = Release|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|ARM64.ActiveCfg = Release|ARM64
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|ARM64.Build.0 = Release|ARM64
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|ARM64.Deploy.0 = Release|ARM64
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|x86.ActiveCfg = Release|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|x86.Build.0 = Release|ARM
+		{24CEF0D2-11F2-4066-B8FA-6DAEF5CE5948}.Release|x86.Deploy.0 = Release|ARM
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -55,6 +79,12 @@ Global
 		SolutionGuid = {A7FEBA7D-11E6-4167-AA57-87BE63CFFC9F}
 	EndGlobalSection
 	GlobalSection(SharedMSBuildProjectFiles) = preSolution
+		Libraries\EEPROM\2.0\EEPROM\EEPROM-2.0.vcxitems*{24cef0d2-11f2-4066-b8fa-6daef5ce5948}*SharedItemsImports = 4
+		Libraries\NmraDcc-master\2.0.8\NmraDcc-master\NmraDcc-master-2.0.8.vcxitems*{24cef0d2-11f2-4066-b8fa-6daef5ce5948}*SharedItemsImports = 4
 		C:\Users\gebruiker\Source\Repos\Wisselaandrijving_V2.0\Libraries\NmraDcc-master\2.0.8\NmraDcc-master\NmraDcc-master-2.0.8.vcxitems*{4aef6a45-8383-4707-936e-38f6c39d2ee4}*SharedItemsImports = 4
+		Libraries\EEPROM\2.0\EEPROM\EEPROM-2.0.vcxitems*{6f99fd1b-bdfe-44de-9c8c-82b812718e8e}*SharedItemsImports = 4
+		Libraries\NmraDcc-master\2.0.8\NmraDcc-master\NmraDcc-master-2.0.8.vcxitems*{6f99fd1b-bdfe-44de-9c8c-82b812718e8e}*SharedItemsImports = 4
+		Libraries\NmraDcc-master\2.0.8\NmraDcc-master\NmraDcc-master-2.0.8.vcxitems*{907ad1cf-9129-4132-b6d8-f512767c2782}*SharedItemsImports = 9
+		Libraries\EEPROM\2.0\EEPROM\EEPROM-2.0.vcxitems*{a7691a14-d7da-48e4-baab-0b4917e7fd7c}*SharedItemsImports = 9
 	EndGlobalSection
 EndGlobal
