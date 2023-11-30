@@ -27,6 +27,7 @@ unsigned long steptimer;
 byte stepfase = 0; //in fullstep max4 in halfstep max 8
 bool steprichting = false;
 bool stepdrive = false;
+byte stand = 0; //0=recht 1=afslaand
 
 void setup() {
 	Serial.begin(9600);
@@ -150,4 +151,9 @@ void Step_exe() {
 }
 void Stepoff() {
 	PORTB &= ~(15 << 0);
+}
+
+void Positie_exe() {
+	//verplaats de stappenmotor
+
 }
