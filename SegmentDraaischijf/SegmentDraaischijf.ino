@@ -18,7 +18,7 @@ NmraDcc  Dcc;
 
 //constanten
 const int LimitSpeed = 900;
-const byte AantalProgramFases = 2;
+const byte AantalProgramFases = 5;
 
 //variabelen
 byte shiftbyte[2];
@@ -31,28 +31,38 @@ unsigned long slowtimer = 0;
 unsigned int waittime = 0;
 int waitnext = 0;
 
+byte scrollcount[4]; //teller voor het ingedrukt houden van een knop
+byte scrollmask = 0; //bepaald welke knoppen op welk moment moge scrollen
 
-byte readlast = 15; //B0000 1111   0=hoogactief(sensor)  1=laagactief(drukknop)
+
+
+byte readlast = 15; //B0000 1111   0=hoogactief(sensor)  1=laagactief(drukknop), laatst gelezen stand van de knoppen
+
 int stepspeed = 2000; //snelheid stappen in us. 
 int minspeed = 15000; //EEprom 20
-int maxspeed = 3000; //EEprom 21
-byte afremfactor = 50; //EEprom 22
+int maxspeed = LimitSpeed; //EEprom 21
+byte accelspeed = 0; //aantal stappen tijdens afremmen accellereren = 10xafremfactor
+byte speedmaxfactor = 0; //eeprom 11
+byte speedminfactor = 0; //eeprom 12
+byte afremfactor = 5; //EEprom 13
 unsigned long steptimer;
 byte stepfase = 0; //in fullstep max4 in halfstep max 8
 bool steprichting = false;
-bool stephomerichting = true;
+bool stephomerichting = true; //naar eeprom
 bool stepdrive = false;
 bool  start = true; //eerste start
-bool stand = 0; //false =rechts true is links
+bool stand = false; //false =p1 true is p2
 byte stepdoel = 0;
 byte stepmovefase = 0;
 byte memreg;
 unsigned int standstep = 0; //huidige stand van de stepper
 unsigned int standdoel = 0; //stop doel voor de stepper
-unsigned int standrechts = 50; //ingeprogrammeerde stand rechts
-unsigned int standlinks = 1000; //ingeprogrammeerde stand links
+unsigned int standp1 = 50; //ingeprogrammeerde stand rechts, P1
+unsigned int standp2 = 3500; //ingeprogrammeerde stand links, P2
 unsigned int standnahome = 0;
 unsigned int displaycount = 0; //counter voor snelheid display 
+byte displaycijfers[4]; //tijdelijke opslag berekende cijfers 0=1000tal 1=100 tal 2=10tal 3=eenheid
+
 
 //temps
 int testnummer = 0;
@@ -60,10 +70,41 @@ int displaytestcount = 0;
 byte displaydigit = 0;
 byte displaysegment = 0;
 
+void Eeprom_write() {
+	//algemeen
+	if (EEPROM.read(10) != memreg)EEPROM.write(10, memreg);
 
+	//tbv.stappenmotor
+	EEPROM.put(100, standp1); //checked automatisch of data is veranderd, alleen aanpassen als data veranderd is. spaart write cycles
+	EEPROM.put(200, standp2);
+	if (EEPROM.read(11) != speedmaxfactor)EEPROM.write(11, speedmaxfactor);
+	if (EEPROM.read(12) != speedminfactor)EEPROM.write(12, speedminfactor);
+	if (EEPROM.read(13) != afremfactor)EEPROM.write(13, afremfactor);
+
+
+	Eeprom_read(); //data terug lezen.
+}
 void Eeprom_read() {
+	//
+	byte _temp = 0;
+	//algemeen
 	memreg = EEPROM.read(10);
+
+	//stappenmotor
 	stephomerichting = memreg & (1 << 0); // bit 0 = opgeslagen stand stephomerichting true is standaard	
+	EEPROM.get(100, standp1);
+	if (standp1 > 3500) standp1 = 50; //default stand
+	EEPROM.get(200, standp2);
+	if (standp2 > 3500)standp2 = 400;
+	speedmaxfactor = EEPROM.read(11); //max speed
+	if (speedmaxfactor > 20) speedmaxfactor = 10; //10 snelheids stappen	
+	maxspeed = (10000 + LimitSpeed) - (500 * speedmaxfactor);
+	speedminfactor = EEPROM.read(12);
+	if (speedminfactor > 20)speedminfactor = 5;
+	minspeed = (LimitSpeed + 25000) - (speedminfactor * 1000);
+	afremfactor = EEPROM.read(13);
+	if (afremfactor > 20)afremfactor = 10;
+	accelspeed = 10 * afremfactor;
 
 }
 
@@ -83,18 +124,29 @@ void setup() {
 	DDRD |= (1 << 5); //rclk
 	DDRD |= (1 << 4); //ser
 
+	Serial.println(PINC);
+
+	//factory reset
+	if (PINC == 41) { //knop 2 en 3 ingedrukt
+		for (int i = 0; i < EEPROM.length(); i++) {
+			if (EEPROM.read(i) < 0xFF)EEPROM.write(i, 0xFF);
+			digit[0] = Letter('F');
+			digit[1] = Letter('o');
+			digit[2] = Letter('c');
+			digit[3] = Letter('t');
+			digit[1] |= (1 << 7); //dots uit
+		}
+	}
+	else {
+		DisplayMotor();
+	}
 	//initialisaties
 	start = true;
 	Eeprom_read();
-	;
-
 	shiftbyte[0] = B11111001;
-	shiftbyte[1] = 0; 
-	
-	DisplayMotor();
-
-	testnummer = 0;
-
+	shiftbyte[1] = 0;
+	//DisplayMotor();
+//	testnummer = 0;
 	Shift();
 }
 void loop()
@@ -135,10 +187,14 @@ void Wait() { //called all 20ms from loop
 		waittime--; //verminder de wachttijd
 		if (waittime == 0) {
 			switch (waitnext) {
+			case 0: //uitschakelen spoelen na een puls				
+				Stepoff();
+				break;
 			case 1: //wachttijd na draaiopdracht naar het draaien
 				Step_move();
 				break;
-			case 2: //?
+			case 2: //s
+
 				break;
 			}
 		}
@@ -158,17 +214,16 @@ void Bezet(bool _bezet) {
 
 //display
 void Display_exe() {
-	displaycount ++;
-	if (displaycount >500) { //clockcycles
-		displaycount = 0; 
+	displaycount++;
+	if (displaycount > 500) { //clockcycles
+		displaycount = 0;
 		digitcount++;
 		if (digitcount > 3)digitcount = 0;
 		shiftbyte[1] &= ~(15 << 0); //clear bits 0~3
 		shiftbyte[1] |= (1 << digitcount);
-		//Serial.println(shiftbyte[1]);
 		shiftbyte[0] = digit[digitcount];
 		Shift();
-		}	
+	}
 }
 void DisplayMotor() {
 	digit[0] = B00111111;//Cijfer(1);//B11111001; //alle segmenten aan
@@ -177,7 +232,7 @@ void DisplayMotor() {
 	digit[3] = B00111111;//Cijfer(4); //B11100000;
 }
 void DisplayNummer(int _nummer) {
-	//toont een 4 cyfer nummer op het display
+	//maakt een 4 cyfer nummer en slaat dit op on cijfers[].
 
 	byte  _cijfer[4];
 	for (byte i = 0; i < 4; i++) {
@@ -185,7 +240,7 @@ void DisplayNummer(int _nummer) {
 	}
 	while (_nummer >= 1000) {
 		_cijfer[0]++;
-		_nummer =_nummer- 1000;
+		_nummer = _nummer - 1000;
 	}
 	while (_nummer >= 100) {
 		_cijfer[1]++;
@@ -197,7 +252,7 @@ void DisplayNummer(int _nummer) {
 	}
 	_cijfer[3] = _nummer;
 
-//voorloop nullen weg halen
+	//voorloop nullen weg halen
 	if (_cijfer[0] == 0) {
 		_cijfer[0] = 10;
 		if (_cijfer[1] == 0) {
@@ -207,10 +262,10 @@ void DisplayNummer(int _nummer) {
 	}
 
 	for (byte i = 0; i < 4; i++) {
-		digit[i] = Cijfer(_cijfer[i]);
+		displaycijfers[i] = Cijfer(_cijfer[i]);
 	}
 }
-void DisplayText() {
+void DisplayShow() {
 	//toont texten aan de hand van de programmeer stand en laatste positie van de draaielementen
 	switch (programfase) {
 	case 0:
@@ -226,9 +281,7 @@ void DisplayText() {
 		break;
 
 	case 1: //posities standen van de steppenmotor
-		digit[0] = Letter('p');
-		digit[1] = Cijfer(0);
-		digit[2] = Cijfer(5);
+		digit[0] = Letter('p');	digit[1] = Cijfer(0);digit[2] = Cijfer(5);
 		if (stand) {
 			digit[3] = Cijfer(1);
 		}
@@ -236,16 +289,37 @@ void DisplayText() {
 			digit[3] = Cijfer(2);
 		}
 		break;
+	case 2: //max speed stepper
+		digit[0] = Cijfer(5);
+		digit[1] = Letter('x');
+		DisplayNummer(speedmaxfactor);//berekend de digits uit een nummer max 9999
+		digit[2] = displaycijfers[2];
+		digit[3] = displaycijfers[3];
+		break;
+	case 3: //min speed stepper
+		digit[0] = Cijfer(5);
+		digit[1] = Letter('|');
+		DisplayNummer(speedminfactor); //berekend de digits uit een nummer max 9999
+		digit[2] = displaycijfers[2];
+		digit[3] = displaycijfers[3];
+		break;
+	case 4: //afremfactor *10=accelspeed.
+		digit[0] = Cijfer(5);
+		digit[1] = Letter('o'); 
+		DisplayNummer(afremfactor); //berekend de digits uit een nummer max 9999
+		digit[2] = displaycijfers[2];
+		digit[3] = displaycijfers[3];
+		break;
 	}
 }
 byte Cijfer(byte _cijfer) {
 	byte _result;
-//PGFE DCBA
+	//PGFE DCBA
 	switch (_cijfer) {
 	case 0:
 		_result = B11000000;
 		break;
-	case 1:		
+	case 1:
 		_result = B11111001;
 		break;
 	case 2:
@@ -281,8 +355,28 @@ byte Cijfer(byte _cijfer) {
 byte Letter(char _letter) {
 	byte _result = 0;
 	switch (_letter) {
+	case 'F':
+		_result = B10001110;
+		break;
+	case 'c':
+		_result = B10100111;
+		break;
+	case 't':
+		_result = B10000111;
+		break;
+	case 'o': //kleine letter 0
+		_result = B00100011;
+		break;
 	case 'p':
 		_result = B10001100;
+		break;
+
+	case 'x':  //boven kapje aangeven maxspeed of zo met punten
+		_result = B01011100;
+		break;
+
+	case '|': //onderkapje met punten
+		_result = B01100011; 
 		break;
 	}
 	return _result;
@@ -306,40 +400,73 @@ void SW_exe()
 			}
 		}
 	}
+	//scrollen
+	for (byte i = 0; i < 4; i++) {
+		if (scrollmask & (1 << i)) { //alleen als scrollmask voor deze knop true is
+			if ((_read & (1 << i)) == false) { //knop ingedrukt
+				if (scrollcount[i] > 20) {
+					SWon(i);
+				}
+				else {
+					scrollcount[i]++;
+				}
+			}
+		}
+	}
 	readlast = _read;
 }
 void SWon(byte _sw) {
-	//Serial.print("knop aan: "); Serial.println(_sw);	
 	switch (_sw) {
 	case 0: //switch 1
-		stand = !stand;
+		if (programfase == 0) stand = !stand; //alleen positie wisselen in bedrijfsstand
 		Step_stand(stand);
 		break;
 
 	case 1: //switch 2
-		//steprichting = !steprichting;
-		//testnummer++;
-		//DisplayNummer(testnummer);
+		switch (programfase) {
+		case 1: //positie stepper min, richting home switch
+			Step_prg_pos(false);
+			break;
+		case 2: //maxspeed
+			Prg_speed(0, false);
+			break;
+		case 3: //minspeed
+			Prg_speed(1, false);
+			break;
+		case 4: //afremfactor
+			Prg_speed(2, false);
+			break;
+		}
 		break;
-	case 2:
-		//Step_stand(true);
+
+	case 2: //switch 3
+		switch (programfase) {
+		case 1: //positie stepper plus van home switch 
+			Step_prg_pos(true);
+			break;
+		case 2: //maxspeed
+			Prg_speed(0, true); 
+			break;
+		case 3://minspeed
+			Prg_speed(1, true);
+			break;
+		case 4://afremfactor, accelspeed
+			Prg_speed(2, true);
+			break;
+		}
 		break;
-	case 3:
-		programfase++;
-		if (programfase == AantalProgramFases)programfase = 0;
-		DisplayText();
+	case 3: //switch 4
+		Prg_up();
 		break;
 	case 4: //Hall sensor voor positie
-		//	Serial.println("Hall sensor niet actief");
 		Step_sensor(false);
 		break;
 	}
 }
 void SWoff(byte _sw) {
-	//Serial.print("knop uit: "); Serial.println(_sw);
+	scrollcount[_sw] = 0; //reset teller voor het scrollen
 	switch (_sw) {
 	case 4: //hall sensor positie
-		//Serial.println("Sensor actief"); //sensor is hoogactief, knoppen zijn laagactief
 		Step_sensor(true);
 		break;
 	}
@@ -352,23 +479,45 @@ void Step_exe() {
 
 			//nog af te leggen traject bepalen
 			unsigned long _aantalsteps = standdoel - standstep;
-			unsigned long _aantalafremsteps = (minspeed - stepspeed) / afremfactor;
+			unsigned long _aantalafremsteps = (minspeed - stepspeed) / accelspeed;
 
 			if (_aantalsteps > _aantalafremsteps) { //versnellen
-				if (stepspeed > afremfactor) stepspeed = stepspeed - afremfactor;  //geeft versnelling
+				if (stepspeed > accelspeed) stepspeed = stepspeed - accelspeed;  //geeft versnelling
 			}
 			else { //vertragen
-				if (stepspeed < minspeed) stepspeed = stepspeed + afremfactor;  //geeft vertraging
+				if (stepspeed < minspeed) stepspeed = stepspeed + accelspeed;  //geeft vertraging
 			}
 			steptimer = micros();
 			Step_steps();
 		}
 	}
 }
+void Step_prg_pos(bool _richting) { //false is naar home, true is van home af
+	steprichting = stephomerichting;
+	if (_richting)steprichting = !steprichting;
+	if (stand) {
+		if (_richting) {
+			standp1++;
+		}
+		else {
+			if (standp1 > 0) standp1--;
+		}
+	}
+	else {
+		if (_richting) {
+			standp2++;
+		}
+		else {
+			if (standp2 > 0)standp2--;
+		}
+	}
+	Step_steps();
+}
 void Step_steps() {
-
 	//stuurt de stappenmotor aan
-	Stepoff(); //zet alle spoelen uit
+	Stepoff(); //zet alle spoelen direct uit
+	waittime = 10;
+	waitnext = 0; //stepoff vertraagd
 
 	switch (stepfase) {
 	case 0:
@@ -408,11 +557,9 @@ void Step_steps() {
 	standstep++;
 
 	//hier moet een noodstop komen 
-	if (standstep > standlinks + standrechts + 100) {
+	if (standstep > standp2 + standp1 + 100) {
 		NoodStop();
 	}
-
-
 
 	if (stepmovefase == 12) { //opweg naar doel.
 
@@ -423,6 +570,7 @@ void Step_steps() {
 	}
 }
 void Stepoff() {
+
 	PORTB &= ~(15 << 0);
 }
 void Step_stand(bool _stand) {
@@ -431,16 +579,16 @@ void Step_stand(bool _stand) {
 	DisplayMotor();
 	stand = _stand;  //misschien is de extra variablele niet nodig..?
 	if (stand) {
-		standdoel = standrechts; //terugdraaien?
+		standdoel = standp1; //terugdraaien?
 	}
 	else {
-		standdoel = standlinks;
+		standdoel = standp2;
 	}
 	stepmovefase = 10;
 	//hier is een timer nodig
 	waitnext = 1; //naar Step_move()
 	waittime = 100;
-	//Step_move();	
+	Prg_end();
 }
 void Step_sensor(bool onoff) {
 
@@ -484,10 +632,71 @@ void Step_move() {
 		break;
 	case 20: //doel bereikt
 		stepdrive = false;
-		Stepoff();
+		// Stepoff(); verplaatst naar een algemene wacht lus na iedere puls
 		Bezet(false); //geef de schijf vrij, locs kunnen gaan rijden 
-		DisplayText();
+		DisplayShow();
 		break;
 
 	}
+}
+//program modes
+void Prg_up() { //volgende programmamode
+	programfase++;
+	if (programfase == AantalProgramFases)programfase = 0;
+	switch (programfase) {
+	case 0: //in bedrijf
+		Prg_end(); //afsluiten programmeerfase, opslaan data
+		break;
+	case 1: //posities standen instellen
+		scrollmask = B0110;
+		break;
+	case 2: //maximale snelheid stappenmotor (herstart nodig, of eeprom read opnieuw???)
+		scrollmask = 0;
+		break;
+	case 3: //minimale snelheid stappenmotor (herstart nodig)
+		scrollmask = 0;
+		break;
+	case 4: //versnellings factor 'afremfactor'
+		scrollmask = 0;
+	}
+	DisplayShow();
+}
+void Prg_end() { //einde programmamode
+	//huidige programmamode opslaan	
+	switch (programfase) {
+	case 1:
+		break;
+	}
+	Eeprom_write();
+	programfase = 0;
+	scrollmask = 0;
+}
+void Prg_speed(byte _type, bool _plusmin) { //_type 0=maxspeedfactor, type 1=minspeedfactor, type 2=speedfactor, accelleratiefactor
+	switch (_type) {
+	case 0: //maxspeed
+		if (_plusmin) {
+			if (speedmaxfactor < 20)speedmaxfactor ++;
+		}
+		else {
+			if (speedmaxfactor >0 )speedmaxfactor--;
+		}
+		break;
+	case 1: //minspeed
+		if (_plusmin) {
+			if (speedminfactor < 20)speedminfactor++;
+		}
+		else {
+			if (speedminfactor > 0)speedminfactor--;
+		}
+		break;
+	case 2: //afremfactor/accelspeed
+		if (_plusmin) {
+			if (afremfactor < 20)afremfactor++;
+		}
+		else {
+			if (afremfactor > 0)afremfactor--;
+		}
+		break;
+	}
+	DisplayShow();
 }
