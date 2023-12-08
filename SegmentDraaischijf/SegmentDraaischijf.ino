@@ -18,12 +18,16 @@ NmraDcc  Dcc;
 
 //constanten
 #define maxdcc 511  //maximaal aantal dcc decoderadressen
+#define dots digit[1]&=~(1<<7); //de punten in het display, aanzetten
+
 const int LimitSpeed = 900;
 const byte AantalProgramFases = 7;
 
 //variabelen
 int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 
+int dccadres = 0; //komt uit EEPROM
 bool dccprg = true; //true=text DCC false=Waarde dcc adres
+
 byte shiftbyte[2];
 byte digit[4];
 byte digitcount = 0;
@@ -117,14 +121,13 @@ void Eeprom_read() {
 	//DCC
 	EEPROM.get(50, decoderadres);
 	if (decoderadres > 512)decoderadres = 1;
-	
-
+	dccadres = 1 + ((decoderadres - 1) * 4); //eertse dccadres
 }
 void setup() {
 	Serial.begin(9600);
 	Dcc.pin(0, 2, 1); //interrupt number 0; pin 2; pullup to pin2
-	Dcc.init(MAN_ID_DIY, 10, 0b11000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder 
-
+	Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
+	//Dcc.init(MAN_ID_DIY, 10, 0b11000000, 0); //bit7 true maakt accessoire decoder, bit6 true geeft decoder per adres
 	//Pinnen
 	DDRC = 0; //port C A0~A5 as inputs
 	PORTC = 63; //pullup weerstanden op pin A0~A5, tbv. switches en sensoren
@@ -224,8 +227,72 @@ void Bezet(bool _bezet) {
 	}
 }
 //DCC
+void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower) {
+	//Serial.print("decoderadres "); Serial.println(BoardAddr);
+	//Serial.print("channel "); Serial.println(OutputPair);
+	byte _channel = 0;
 
+	if (BoardAddr - (decoderadres) == 0) {
+		_channel = OutputPair;
+		Dcc_rx(_channel, Direction, OutputPower);
+	}
+	else {
+		if (BoardAddr - (decoderadres) == 1) {
+			_channel = OutputPair + 4;
+			Dcc_rx(_channel, Direction, OutputPower);
+		}
+	}
+}
+void Dcc_rx(byte _channel, byte _port, bool _onoff) {
+	//hier komen de dcc commands en kunnen ze worden toegewezen aan een functie, voorlopig even alleen de default
 
+	switch (_channel) {
+	case 0: //stepper
+		//Serial.println("stepper");
+		Step_stand(_port);
+		break;
+	case 1: //servo1
+		//Serial.println("Servo1");
+		break;
+	case 2: //servo2
+		break;
+	case 3: //alarm
+		break;
+	case 4: //out1
+		if (_port && _onoff) {			
+				shiftbyte[1] |= (1 << 4);
+			}
+			else {
+				shiftbyte[1] &= ~(1 << 4);
+			}		
+		break;
+	case 5: //out2
+		if (_port && _onoff) {
+			shiftbyte[1] |= (1 << 5);
+		}
+		else {
+			shiftbyte[1] &= ~(1 << 5);
+		}
+		break;
+	case 6: //out3
+		if (_port && _onoff) {
+			shiftbyte[1] |= (1 << 6);
+		}
+		else {
+			shiftbyte[1] &= ~(1 << 6);
+		}
+		break;
+	case 7: //out4
+		if (_port && _onoff) {
+			shiftbyte[1] |= (1 << 7);
+		}
+		else {
+			shiftbyte[1] &= ~(1 << 7);
+		}
+		break;
+
+	}
+}
 //display
 void Display_exe() {
 	displaycount++;
@@ -339,24 +406,28 @@ void DisplayShow() {
 	case 6:
 		//twee standen de waarde of de text DCC
 		if (dccprg) { //toon 'DCC'
-			digit[0] = Cijfer(10); 
+			digit[0] = Cijfer(10);
 			digit[1] = Letter('d');
 			digit[2] = Letter('c');
 			digit[3] = Letter('c');
 
-			dccprg = false;
-			waittime=100;
+			dccprg = false; //wachtlus instellen, zet dispaly om van 'dcc' ; naar de waarde
+			waittime = 80;
 			waitnext = 2;
-
 		}
-		else { //toon het DCC adres 
-			int _dccadres = 1+((decoderadres - 1) * 4);
+		else { //toon het DCC adres 			
+			int _dccadres = 1 + ((decoderadres - 1) * 4);
 			DisplayNummer(_dccadres);
 			for (int i = 0; i < 4; i++) {
 				digit[i] = displaycijfers[i];
 			}
 		}
+		break;
+	case 7: //functie van dccadres
+		digit[0] = Letter('d'); digit[1] = Cijfer(1); dots;
 
+		break;
+	case 8: //functie van dccadres+1
 		break;
 	}
 }
@@ -405,7 +476,7 @@ byte Letter(char _letter) {
 	switch (_letter) {
 	case 'd':
 		_result = B10100001;
-			break;
+		break;
 	case 'c':
 		_result = B10100111;
 		break;
@@ -696,18 +767,12 @@ void Prg_up() { //volgende programmamode
 	case 2: //maximale snelheid stappenmotor (herstart nodig, of eeprom read opnieuw???)
 		scrollmask = 0;
 		break;
-	case 3: //minimale snelheid stappenmotor (herstart nodig)
-		scrollmask = 0;
-		break;
-	case 4: //versnellings factor 'afremfactor'
-		scrollmask = 0;
-		break;
-	case 5: //start/default richting stepper
-		scrollmask = 0;
-		break;
 	case 6: //DCC adres (altijd eerste channel van een decoder adres)
 		scrollmask = B0110;
 		dccprg = true;
+		break;
+	default:
+		scrollmask = 0;
 		break;
 	}
 	DisplayShow();
@@ -795,5 +860,4 @@ void Prg_dccadres(bool plusmin) {
 	waittime = 200;
 	waitnext = 2; //displayshow()
 	dccprg = true;
-
 }
