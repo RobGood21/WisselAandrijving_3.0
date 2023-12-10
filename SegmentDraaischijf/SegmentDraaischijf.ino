@@ -41,8 +41,8 @@ int waitnext = 0;
 byte scrollcount[4]; //teller voor het ingedrukt houden van een knop
 byte scrollmask = 0; //bepaald welke knoppen op welk moment moge scrollen
 
-byte readlast = 15; //B0000 1111   0=hoogactief(sensor)  1=laagactief(drukknop), laatst gelezen stand van de knoppen
-
+//byte readlast = 15; //B0000 1111   0=hoogactief(sensor)  1=laagactief(drukknop), laatst gelezen stand van de knoppen
+byte readlast = B00001111;
 int stepspeed = 2000; //snelheid stappen in us. 
 int minspeed = 15000; //EEprom 20
 int maxspeed = LimitSpeed; //EEprom 21
@@ -70,11 +70,6 @@ byte displaycijfers[4]; //tijdelijke opslag berekende cijfers 0=1000tal 1=100 ta
 
 
 //temps
-//int testnummer = 0;
-//int displaytestcount = 0;
-//byte displaydigit = 0;
-//byte displaysegment = 0;
-
 //algemeen en debugs
 void Eeprom_write() {
 	//algemeen
@@ -129,8 +124,8 @@ void setup() {
 	Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
 	//Dcc.init(MAN_ID_DIY, 10, 0b11000000, 0); //bit7 true maakt accessoire decoder, bit6 true geeft decoder per adres
 	//Pinnen
-	DDRC = 0; //port C A0~A5 as inputs
-	PORTC = 63; //pullup weerstanden op pin A0~A5, tbv. switches en sensoren
+	DDRC = 0; //port C A0~A3 as inputs 
+	PORTC = B00001111; //pullup weerstanden op pin A0~A3, tbv. switches,   sensoren A4&A5 hebben een fysieke 10K pull down
 	DDRB = 15; //pinnen 8~11 als output
 	PORTB &= ~(15 << 0); //zet pinnen 8~11 laag
 
@@ -139,7 +134,7 @@ void setup() {
 	DDRD |= (1 << 5); //rclk
 	DDRD |= (1 << 4); //ser
 
-	Serial.println(PINC);
+	//Serial.println(PINC);
 
 	//factory reset
 	if (PINC == 41) { //knop 2 en 3 ingedrukt
@@ -259,12 +254,12 @@ void Dcc_rx(byte _channel, byte _port, bool _onoff) {
 	case 3: //alarm
 		break;
 	case 4: //out1
-		if (_port && _onoff) {			
-				shiftbyte[1] |= (1 << 4);
-			}
-			else {
-				shiftbyte[1] &= ~(1 << 4);
-			}		
+		if (_port && _onoff) {
+			shiftbyte[1] |= (1 << 4);
+		}
+		else {
+			shiftbyte[1] &= ~(1 << 4);
+		}
 		break;
 	case 5: //out2
 		if (_port && _onoff) {
@@ -516,7 +511,7 @@ void SW_exe()
 	if (_change > 0) {
 		for (byte i = 0; i < 6; i++) {
 			if (_change & (1 << i)) {
-				if (_read & (1 << i)) { //knop losgelaten
+				if (_read & (1 << i)) { //knop losgelaten, sensor actief
 					SWoff(i);
 				}
 				else { //knopingedrukt
@@ -541,6 +536,7 @@ void SW_exe()
 	readlast = _read;
 }
 void SWon(byte _sw) {
+	//Serial.print("on  "); Serial.println(_sw);
 	switch (_sw) {
 	case 0: //switch 1
 		if (programfase == 0) stand = !stand; //alleen positie wisselen in bedrijfsstand
@@ -594,14 +590,21 @@ void SWon(byte _sw) {
 		Prg_up();
 		break;
 	case 4: //Hall sensor voor positie
+		//Step_sensor(false);
+		break;
+	case 5: //hall sensor home
 		Step_sensor(false);
 		break;
 	}
 }
 void SWoff(byte _sw) {
 	scrollcount[_sw] = 0; //reset teller voor het scrollen
+	//Serial.print("off  "); Serial.println(_sw);
 	switch (_sw) {
-	case 4: //hall sensor positie
+	case 4: //
+		//	Step_sensor(true);
+		break;
+	case 5: //hall sensor home
 		Step_sensor(true);
 		break;
 	}
@@ -707,7 +710,6 @@ void Step_stand(bool _stand) {
 void Step_sensor(bool onoff) {
 
 	if (onoff) { //sensor wordt  actief
-
 		switch (stepmovefase) {
 		case 10: //home zoeken
 			steprichting = !steprichting; //keren
