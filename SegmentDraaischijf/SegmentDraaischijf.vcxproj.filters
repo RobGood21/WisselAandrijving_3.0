@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SegmentDraaischijf.ino" />
+    <ClCompile Include="deKoder.ino" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="__vm\.SegmentDraaischijf.vsarduino.h">
