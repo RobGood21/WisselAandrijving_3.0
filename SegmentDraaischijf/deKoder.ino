@@ -8,6 +8,10 @@
 
 
 */
+//PINS 
+//servo 1 op 12 portb 4 
+//servo 2 op 13 PORTB 5
+
 
 //libraries
 #include <EEPROM.h> //EEprom 
@@ -22,14 +26,34 @@ NmraDcc  Dcc;
 
 const int LimitSpeed = 900;
 const byte AantalProgramFases = 7;
-const byte AantalActies = 10;
+const byte AantalActies = 4;
 const byte StepMaxStops = 8; //max  posities voor de stappenmotor, = 1 decoderadres vol
+const int ServoMinPositie = 80;
+const int ServoMaxPositie = 310;
+const int ServoMaxStops = 8;
 
 //variabelen
-int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 
-int dccadres = 0; //komt uit EEPROM
+unsigned int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 EEPROM 50
+unsigned int dccadres = 1; //
 bool dccprg = true; //true=text DCC false=Waarde dcc adres
 byte stepaantalstops = 2; //EEprom 15+
+unsigned int servorq[2]; // positie waar servo bij b=volgende puls naar toe gaat
+unsigned int servocurrent[2]; //werkelijke positie van de servo
+unsigned int servotarget[2]; //uiteindelijke doel van de servo
+unsigned int servointeruptcount[2]; //teller in de ISR
+byte servostopcount[2]; //teller voor uitzetten servo puls
+byte servospeedcount[2];
+byte servospeed[2];
+byte servolangzaamcount[2];
+
+byte servoaantalstops[2];
+unsigned int servo1pos[8];
+unsigned int servo2pos[8];
+
+byte servostop[2];  //stop waar de servo nu in staat cq naar opweg is
+byte servo; //de actieve servo 0 of 1
+
+unsigned long ServoTimer;
 
 byte shiftbyte[2];
 byte digit[4];
@@ -71,10 +95,6 @@ byte memreg;
 unsigned int standstep = 0; //huidige stand van de stepper
 unsigned int standdoel = 0; //stop doel voor de stepper
 
-
-//unsigned int standp1 = 50; //ingeprogrammeerde stand rechts, P1
-//unsigned int standp2 = 3500; //ingeprogrammeerde stand links, P2
-
 unsigned int stepper[StepMaxStops]; //ingestelde posities van de stepper
 
 unsigned int standnahome = 0;
@@ -82,8 +102,17 @@ unsigned int displaycount = 0; //counter voor snelheid display
 byte displaycijfers[4]; //tijdelijke opslag berekende cijfers 0=1000tal 1=100 tal 2=10tal 3=eenheid
 
 
-//temps
-//algemeen en debugs
+ISR(TIMER1_COMPA_vect) {
+
+
+	servointeruptcount[servo]++;
+	if (servointeruptcount[servo] >= servocurrent[servo]) { //min 65 max 310 geeft 180graden servo
+		TIMSK1 &= ~(1 << 1);
+		servointeruptcount[servo] = 0;
+		PORTB &= ~(1 << (4 + servo)); //4 of 5
+	}
+}
+
 void Factory() {
 	//factory reset
 	if (confirm) {
@@ -113,25 +142,41 @@ void Eeprom_write() {
 	if (EEPROM.read(14) != actie)EEPROM.write(14, actie); //dit is niet ideaal, misschien later iets beters voor verzinnen
 	//dcc
 	if (EEPROM.read(15) != stepaantalstops)EEPROM.write(15, stepaantalstops);
+	if (EEPROM.read(16) != servoaantalstops[0])EEPROM.write(16, servoaantalstops[0]);
+	if (EEPROM.read(17) != servoaantalstops[1])EEPROM.write(17, servoaantalstops[1]);
+	if (EEPROM.read(18) != servospeed[0])EEPROM.write(18, servospeed[0]);
+	if (EEPROM.read(19) != servospeed[1])EEPROM.write(19, servospeed[1]);
+
 	EEPROM.put(50, decoderadres);
+
+	//servo's
+	for (byte i = 0; i < ServoMaxStops; i++) {
+		EEPROM.put(300 + (i * 10), servo1pos[i]);
+		EEPROM.put(400 + (i * 10), servo2pos[i]);
+	}
 	Eeprom_read(); //data terug lezen.
 }
 void Eeprom_read() {
-	//byte _temp = 0;
-	//algemeen
-
-
 	memreg = EEPROM.read(10); //default =0xFF
 	stephomerichting = memreg & (1 << 0); //startrichting stepper. 
 	actie = EEPROM.read(14); if (actie > AantalActies)actie = 1; //default stepper
 	stepaantalstops = EEPROM.read(15); if (stepaantalstops > StepMaxStops)stepaantalstops = 2;
+	servoaantalstops[0] = EEPROM.read(16);
+	servoaantalstops[1] = EEPROM.read(17);
+	servospeed[0] = EEPROM.read(18);
+	servospeed[1] = EEPROM.read(19);
+	for (byte i = 0; i < 2; i++) {
+		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
+		if (servospeed[i] > 10)servospeed[i] = 8; //servo default
+	}
+
 	//stappenmotor
 	stephomerichting = memreg & (1 << 0); // bit 0 = opgeslagen stand stephomerichting true is standaard	
-	Serial.println(stepstop);
+
 	for (byte i = 0; i < StepMaxStops; i++) {
 		EEPROM.get((i * 10) + 100, stepper[i]); //gebruikt 8 bytes
 		if (stepper[i] > 9999 || stepper[i] == 0)stepper[i] = i * 100 + 50;
-	}	
+	}
 	speedmaxfactor = EEPROM.read(11); //max speed
 	if (speedmaxfactor > 20) speedmaxfactor = 10; //10 snelheids stappen	
 	maxspeed = (10000 + LimitSpeed) - (500 * speedmaxfactor);
@@ -142,11 +187,29 @@ void Eeprom_read() {
 	if (afremfactor > 20)afremfactor = 10;
 	accelspeed = 10 * afremfactor;
 
+	//Servoos
+	//standen servo 1
+	for (byte i = 0; i < ServoMaxStops; i++) {
+		EEPROM.get(300 + (i * 10), servo1pos[i]);
+		if (servo1pos[i] > ServoMaxPositie)servo1pos[i] = ServoMinPositie + 10 + (i * 20);
+
+		EEPROM.get(400 + (i * 10), servo2pos[i]);
+		if (servo2pos[i] > ServoMaxPositie)servo2pos[i] = ServoMinPositie + 10 + (i * 20);
+	}
+
+
+
 	//DCC
 	EEPROM.get(50, decoderadres);
-	if (decoderadres > 512)decoderadres = 1;
-	dccadres = 1 + ((decoderadres - 1) * 4); //eertse dccadres
+	if (decoderadres > maxdcc)decoderadres = 1;
+	dccadres = 1 + ((decoderadres - 1) * 4); //eerste dccadres
 
+}
+void debug() {
+	for (byte i = 0; i < 4; i++) {
+		digit[i] = Cijfer(1);
+	}
+	dots;
 }
 void setup() {
 	Serial.begin(9600);
@@ -156,44 +219,66 @@ void setup() {
 	//Pinnen
 	DDRC = 0; //port C A0~A3 as inputs 
 	PORTC = B00001111; //pullup weerstanden op pin A0~A3, tbv. switches,   sensoren A4&A5 hebben een fysieke 10K pull down
-	DDRB = 15; //pinnen 8~11 als output
-	PORTB &= ~(15 << 0); //zet pinnen 8~11 laag
+	DDRB |= (63 << 0); //pinnen 8~13 als output
+	PORTB &= ~(63 << 0); //zet pinnen 8~11 laag
 
 	DDRD |= (1 << 7); //pins7,6,5,4 als output pin 7=bezet flag , pin 6 = SRCLK,  pin 5= RCLK,  pin 4=SER	
 	DDRD |= (1 << 6); //srclk
 	DDRD |= (1 << 5); //rclk
 	DDRD |= (1 << 4); //ser
 
-	//Serial.println(PINC);
-
+	//timer1  voor de servo's, puls van 10us maken (100xp=1ms 200xp=2ms)
+	TCCR1A = 0; //Timer / Counter1 Control Register A
+	TCCR1B = 0;//  Timer / Counter1 Control Register B
+	TCCR1B |= (1 << 3); //WGM12 set, CTC mode (clear timer on compare met OCR1A)
+	TCCR1B |= (1 << 0); //CS10 prescaler
+	//TCCR1B |= (1 << 1); //CS11 prescaler
+	//TCCR1B |= (1 << 2); //CS12 prescaler
+	//TCCR1C  //Timer / Counter1 Control Register C
+	//TCNT1H and TCNT1L – Timer / Counter1 //de feitelijke teller
+	//OCR1A = 500;
+	OCR1AH = 0;
+	OCR1AL = 125;
+	// 
+	//OCR1AH and OCR1AL – Output Compare Register 1 A
+	//TIMSK1 = 0;  //Timer / Counter1 Interrupt Mask Register
+	//TIMSK1 |= (1 << 1); //Bit 1 – OCIE1A : Timer / Counter1, Output Compare A Match Interrupt Enable
 
 	//initialisaties
 	Init();
-
 }
 void Init() {
 	Eeprom_read();
+
+	servocurrent[0] = 150; servocurrent[1] = 150;
+
+
+
 	start = true;
-	//stepstop = 0;   //om vage reden is dit nodig anders start stepstop als 100??
+	servostop[0] = 0; servostop[1] = 0;
 	programfase = 0;
 	actie = 1;
 	shiftbyte[0] = B11111001;
 	shiftbyte[1] = 0;
 	Shift();
 	DisplayShow();
-	Serial.println(stepstop);
 }
+
 void loop()
 {
 	Dcc.process();
 	Step_exe();
 	Display_exe();
 
+	if (millis() - ServoTimer > 4) {
+		Servo_exe();
+		ServoTimer = millis();
+	}
+
 	if (millis() - slowtimer > 20) { //timer op 20ms
 		slowtimer = millis();
 		SW_exe(); //uitlezen switches en  sensoren.
 		Wait();
-		//testdisplay();
 	}
 }
 void Shift() {
@@ -230,10 +315,21 @@ void Wait() { //called all 20ms from loop
 			case 2: //display verversen, dcc adres bv.
 				DisplayShow();
 				break;
+				//servo
+			case 10:
+				Servo1_move();
+				break;
+			case 11:
+				Servo2_move();
+				break;
+
 			}
 		}
 	}
 }
+
+//byte beits[2];
+
 void NoodStop() {
 	//hier nog iets voor maken
 }
@@ -245,14 +341,6 @@ void Bezet(bool _bezet) {
 		PORTD &= ~(1 << 7);
 	}
 }
-
-//overall, acties
-void Actie_exe(bool _plusmin) {
-	if (_plusmin)actie++; else actie--;   //dit werkt dus!
-	if (actie > AantalActies)actie = 0;
-	DisplayShow();
-}
-
 //DCC
 void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower) {
 	//Serial.print("decoderadres "); Serial.println(BoardAddr);
@@ -320,7 +408,6 @@ void Dcc_rx(byte _channel, byte _port, bool _onoff) {
 
 	}
 }
-
 //display
 void Display_exe() {
 	displaycount++;
@@ -334,8 +421,9 @@ void Display_exe() {
 		Shift();
 	}
 }
-void DisplayNummer(int _nummer, bool _show) {
+void DisplayNummer(int _nummer, byte _show) {
 	//maakt een 4 cyfer nummer en slaat dit op on cijfers[].
+	//hier kun je wat proces winst halen door de bool te veranderen in byte, en deze void de digits in laten schrijven
 
 	byte  _cijfer[4];
 	for (byte i = 0; i < 4; i++) {
@@ -360,18 +448,27 @@ void DisplayNummer(int _nummer, bool _show) {
 		_cijfer[0] = 10;
 		if (_cijfer[1] == 0) {
 			_cijfer[1] = 10;
-			if (_cijfer[2] == 0)_cijfer[2] = 10;
+			if (_cijfer[2] == 0) {
+				_cijfer[2] = 10;
+			}
 		}
 	}
 
 	for (byte i = 0; i < 4; i++) {
 		displaycijfers[i] = Cijfer(_cijfer[i]);
+		//displaycijfers[i] = _cijfer[i];
 	}
 
-	if (_show) {
+	switch (_show) {
+	case 4:
 		for (int i = 0; i < 4; i++) {
 			digit[i] = displaycijfers[i];
 		}
+		break;
+	case 23:
+		digit[2] = displaycijfers[2];
+		digit[3] = displaycijfers[3];
+		break;
 	}
 }
 void DisplayShow() {
@@ -383,10 +480,10 @@ void DisplayShow() {
 		DisplayStepper();
 		break;
 	case 2:
-		DisplayServo(true);
+		DisplayServo(0);
 		break;
 	case 3:
-		DisplayServo(false);
+		DisplayServo(1);
 		break;
 	}
 }
@@ -425,30 +522,30 @@ void DisplayStepper() {
 	case 2: //aantal stops van de stepper
 		digit[0] = Letter('b'); //b(yj48-28)c(ount)
 		digit[1] = Letter('c');
-		DisplayNummer(stepaantalstops, false);
-		digit[2] = displaycijfers[2];
-		digit[3] = displaycijfers[3];
+		DisplayNummer(stepaantalstops, 23);
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
 		break;
 	case 3: //min speed stepper
 		digit[0] = Letter('b');
 		digit[1] = Letter('_'); dots;
-		DisplayNummer(speedminfactor, false);//berekend de digits uit een nummer max 9999
-		digit[2] = displaycijfers[2];
-		digit[3] = displaycijfers[3];
+		DisplayNummer(speedminfactor, 23);//berekend de digits uit een nummer max 9999
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
 		break;
 	case 4: //max speed stepper
 		digit[0] = Letter('b');
 		digit[1] = Letter('|'); dots;//streepje boven
-		DisplayNummer(speedmaxfactor, false); //berekend de digits uit een nummer max 9999
-		digit[2] = displaycijfers[2];
-		digit[3] = displaycijfers[3];
+		DisplayNummer(speedmaxfactor, 23); //berekend de digits uit een nummer max 9999
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
 		break;
 	case 5: //afremfactor *10=accelspeed.
 		digit[0] = Letter('b');
 		digit[1] = Letter('-');  dots;
-		DisplayNummer(afremfactor, false); //berekend de digits uit een nummer max 9999
-		digit[2] = displaycijfers[2];
-		digit[3] = displaycijfers[3];
+		DisplayNummer(afremfactor, 23); //berekend de digits uit een nummer max 9999
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
 		break;
 	case 6: //default richting stepper naar home
 		digit[0] = Letter('b');
@@ -488,7 +585,7 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 		}
 		else { //toon het DCC adres 			
 			int _dccadres = 1 + ((decoderadres - 1) * 4);
-			DisplayNummer(_dccadres, true);
+			DisplayNummer(_dccadres, 4);
 			//for (int i = 0; i < 4; i++) {
 			//	digit[i] = displaycijfers[i];
 			//}
@@ -511,12 +608,7 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 		break;
 	}
 }
-void DisplayServo(bool _servo) {
-	if (_servo)digit[0] = Cijfer(1); else digit[0] = Cijfer(2);
-	digit[1] = Cijfer(10);
-	digit[2] = Cijfer(10);
-	digit[3] = Cijfer(10);
-}
+
 byte Cijfer(byte _cijfer) {
 	byte _result;
 	//PGFE DCBA
@@ -602,8 +694,17 @@ byte Letter(char _letter) {
 	case 'U':
 		_result = B11000001;
 		break;
+	case 'x': //aanduiding voor servo1
+		_result = B10010110;
+		break;
+	case 'q': //is teken voor aanduiding van servo 2 
+		_result = B10100110;
+		break;
 	case '=':  //twee streepjes
 		_result = B10110111;
+		break;
+	case '>': //teken voor speed verticaal = teken
+		_result = B11101011;
 		break;
 
 	case '|': //streepje boven
@@ -650,18 +751,22 @@ void SW_exe()
 void SWon(byte _sw) {
 	//Serial.print("on  "); Serial.println(_sw);
 	switch (_sw) {
-		//*****************************************
+		//*****************************************SWITCH1***********
 	case 0: //switch 1
 		switch (actie) {
 		case 1: //stepper		
 			if (programfase == 0) Step_stand(); //alleen positie wisselen in bedrijfsstand
 			break;
-		case 2:
+		case 2: //actie: Servo 1
+			Servo_stand(0);
+			break;
+		case 3: //actie servo 2
+			Servo_stand(1);
 			break;
 		}
 		break;
 
-		//*********************************
+		//*********************************SWITCH 2**********
 	case 1: //switch 2
 		switch (actie) {
 		case 0: //actie: common
@@ -696,16 +801,19 @@ void SWon(byte _sw) {
 				break;
 			}
 			break;
-
-
 		case 2: //actie: Servo 1
 			switch (programfase) {
 			case 0:
 				Actie_exe(false);
 				break;
-			case 1:
+			case 1: //instellen positie servo 1
+				Prg_servopos(0, false);
 				break;
-			case 2:
+			case 2: //dec aantal stops servo 1
+				Prg_servoaantalstops(0, false);
+				break;
+			case 3: //dec servo 1 speed
+				Prg_servospeed(0, false);
 				break;
 			}
 			break;
@@ -714,16 +822,21 @@ void SWon(byte _sw) {
 			case 0:
 				Actie_exe(false);
 				break;
-			case 1:
+			case 1: //instellen postie servo 2
+				Prg_servopos(1, false);
 				break;
-			case 2:
+			case 2: //dec aantal stops servo 2
+				Prg_servoaantalstops(1, false);
+				break;
+			case 3: //dec servo 2 speed
+				Prg_servospeed(1, false);
 				break;
 			}
 			break;
 		}
 		break;
 
-		//***********************************
+		//***********************************SWITCH 3******
 	case 2: //switch 3
 		switch (actie) {
 		case 0: //actie: common
@@ -770,15 +883,32 @@ void SWon(byte _sw) {
 			case 0:
 				Actie_exe(true);
 				break;
-			case 1:break;
+			case 1:
+				Prg_servopos(0, true);
+				break;
+			case 2: //inc servo 1 aantalstops
+				Prg_servoaantalstops(0, true);
+				break;
+			case 3: //inc servo 1 speed
+				Prg_servospeed(0, true);
+				break;
 			}
 			break;
+
+
 		case 3: //actie servo 2
 			switch (programfase) {
-			case 0:
+			case 0: //in bedrijf
 				//Actie_exe(true);   //even nog niet er zijn (nu) niet meer acties
 				break;
-			case 1:
+			case 1: //instellen positie van servo 2
+				Prg_servopos(1, true);
+				break;
+			case 2: //inc aantal stops servo 2
+				Prg_servoaantalstops(1, true);
+				break;
+			case 3: //inc servo 2 speed
+				Prg_servospeed(1, true);
 				break;
 			}
 			break;
@@ -901,14 +1031,14 @@ void Step_stand() {
 
 	stepstop++; //wordt dubbel gedaan
 	if (stepstop > stepaantalstops)stepstop = 1;
-	standdoel = stepper[stepstop -1];
+	standdoel = stepper[stepstop - 1];
 	stepmovefase = 10;
 
 	//hier is een timer nodig
 	waitnext = 1; //naar Step_move()
 	waittime = 100;
 	DisplayShow();
-	//Prg_end();   DIT KAN NIET maakt een EEPROM write
+
 }
 void Step_sensor(bool onoff) {
 
@@ -960,6 +1090,11 @@ void Step_move() {
 }
 
 //program acties
+void Actie_exe(bool _plusmin) {
+	if (_plusmin)actie++; else actie--;   //dit werkt dus!
+	if (actie > AantalActies)actie = 0;
+	DisplayShow();
+}
 void Prg_up() { //volgende programmamode
 	programfase++;
 	switch (actie) {
@@ -969,27 +1104,13 @@ void Prg_up() { //volgende programmamode
 	case 1://stepper instellingen
 		ProgramStep();
 		break;
+	case 2:
+		ProgramServo(0);
+		break;
+	case 3:
+		ProgramServo(1);
+		break;
 	}
-
-	//if (programfase == AantalProgramFases)programfase = 0;
-	//switch (programfase) {
-	//case 0: //in bedrijf
-	//	Prg_end(); //afsluiten programmeerfase, opslaan data
-	//	break;
-	//case 1: //posities standen instellen
-	//	scrollmask = B0110;
-	//	break;
-	//case 2: //maximale snelheid stappenmotor (herstart nodig, of eeprom read opnieuw???)
-	//	scrollmask = 0;
-	//	break;
-	//case 6: //DCC adres (altijd eerste channel van een decoder adres)
-
-	//	break;
-	//default:
-	//	scrollmask = 0;
-	//	break;
-	//}
-
 	DisplayShow();
 }
 void Prg_end() { //einde programmamode
@@ -1030,7 +1151,7 @@ void prg_steppos(bool _richting) { //false is naar home, true is van home af
 	else {
 		if (stepper[_p] > 0) { stepper[_p]--; Step_steps(); }
 	}
-	DisplayNummer(stepper[_p], true);
+	DisplayNummer(stepper[_p], 4);
 }
 void prg_stepaantalstops(bool plusmin) {
 	if (plusmin) {
@@ -1079,6 +1200,173 @@ void Prg_stephome(bool _richting) {
 	}
 	DisplayShow();
 }
+
+//servo's
+void Servo_exe() {
+	byte _langzamer = 0;
+	byte _sneller = 1;
+
+	//servo's om en om doen
+	servo++; //deze 'servo' is dus de public servo, let op dat je deze niet verwart met de private '_servo'. 
+	if (servo > 1)servo = 0;
+	//uitstappen
+	if (servostop[servo] == 0)return;
+	if (servostopcount[servo] > 100)return;
+
+	//snelheid implementeren >10 versnellen <10 vertragen, niks doen bij 10.		
+	_langzamer = 10 - servospeed[servo];
+
+	//huidige positie en daaruit voor komende taak bepalen en uitvoeren
+	if (servocurrent[servo] == servotarget[servo]) {
+		servostopcount[servo]++;
+	}
+	else {
+		servolangzaamcount[servo]++;
+		if (servolangzaamcount[servo] > _langzamer) {
+			servolangzaamcount[servo] = 0;
+
+			if (servocurrent[servo] < servotarget[servo]) {
+				servocurrent[servo]++;
+
+			}
+			else {
+				servocurrent[servo]--;
+			}
+		}
+	}
+
+	//puls starten, ISR zal de puls stoppen na een periode tussen 1 en 2 msec.
+	PORTB |= (1 << (4 + servo));
+	TIMSK1 |= (1 << 1);
+}
+void Servo_stand(byte _servo) {
+	servostop[_servo]++;
+	if (servostop[_servo] > servoaantalstops[_servo])servostop[_servo] = 1;
+
+	waitnext = 10 + _servo;
+	waittime = 10;
+	DisplayShow();
+}
+void Servo1_move() {
+
+	servotarget[0] = servo1pos[servostop[0] - 1];
+	servostopcount[0] = 0;
+
+	//Serial.println(servotarget[0]);
+
+}
+void Servo2_move() {
+	servotarget[1] = servo2pos[servostop[1] - 1];
+	servostopcount[1] = 0;
+}
+void DisplayServo(byte _servo) {
+
+	//if (_servo == 0)digit[0] = Letter('x'); else digit[0] = Letter('q'); //x/q=teken voor servo 1 of 2 
+	digit[0] = Cijfer(_servo + 1);
+
+	switch (programfase) {
+	case 0: //in bedrijf
+
+		digit[1] = Cijfer(10);
+		digit[2] = Letter('p');
+		if (servostop[_servo] == 0)digit[3] = Letter('-'); else digit[3] = Cijfer(servostop[_servo]);
+		break;
+
+	case 1: //posities instellen
+		//if (_servo == 0)digit[0] = Letter('x'); else digit[0] = Letter('q'); //q=teken voor servo 2
+		if (servostop[_servo] == 0) {
+			digit[1] = Letter('-'); digit[2] = Letter('-');
+		}
+		else {
+			digit[1] = Letter('_');
+			digit[2] = Letter('|'); //bovenstreepje
+
+			if (servostop[_servo] == 0)digit[3] = Letter('-'); else digit[3] = Cijfer(servostop[_servo]);
+		}
+		break;
+	case 2: //aantal stops van een servo instellen, default =2
+		digit[1] = Letter('c');
+		DisplayNummer(servoaantalstops[_servo], 23); //false=niet het display vullen met het gevonden getal
+		//digit[2] = Cijfer(displaycijfers[2]);
+		//digit[3] = Cijfer(displaycijfers[3]);
+		dots;
+		break;
+	case 3: //snelheid van servoos
+		digit[1] = Letter('>'); //rechtopstaande =teken
+		DisplayNummer(servospeed[_servo], 23);
+		//digit[2] = Cijfer(displaycijfers[2]);
+		//digit[3] = Cijfer(displaycijfers[3]);
+		dots;
+		break;
+	}
+}
+void ProgramServo(byte _servo) { //called from prg_up
+	//programfase inc gebeurt in prg_up
+	if (programfase > 3)programfase = 0;
+	scrollmask = 0;
+	switch (programfase) {
+	case 0:
+		Prg_end();
+		break;
+	case 1: //instellen posities
+		scrollmask = B0110;
+		break;
+	case 2: //aantal stops
+		break;
+	case 3: //snelheid, speed
+		break;
+	}
+	//displayshow volgt nu in prg_up, dit verwijst door naar displayservo
+}
+void Prg_servopos(byte _servo, bool _plusmin) {
+	//Serial.print("servo: "); Serial.print(_servo); Serial.print("   plusmin: "); Serial.println(_plusmin);
+	//aanpassen positie
+	//servostop loopt van 0~4 0 stand is onbekend
+	//servo1pos en servo2pos lopen van 0~3 , servo#pos[0] = positie van servostop[1];
+	if (servostop[_servo] == 0)return; //uitstappen
+	byte _servostop = servostop[_servo] - 1; //stop omzetten in variable die de juiste stop in de servo posities aanduid,
+
+	if (_servo == 0) {
+		if (_plusmin) {
+			if (servo1pos[_servostop] < ServoMaxPositie) servo1pos[_servostop]++;
+		}
+		else {
+			if (servo1pos[_servostop] > ServoMinPositie)servo1pos[_servostop]--;
+		}
+		DisplayNummer(servo1pos[_servostop], 4); //plaats nummer in het display
+		Servo1_move();
+	}
+	else {
+		if (_plusmin) {
+			if (servo2pos[_servostop] < ServoMaxPositie)servo2pos[_servostop]++;
+		}
+		else {
+			if (servo2pos[_servostop] > ServoMinPositie)servo2pos[_servostop]--;
+		}
+		DisplayNummer(servo2pos[_servostop], 4); //plaats nummer in het display
+		Servo2_move();
+	}
+}
+void Prg_servoaantalstops(byte _servo, bool _plusmin) {
+	if (_plusmin) {
+		if (servoaantalstops[_servo] < ServoMaxStops)servoaantalstops[_servo]++;
+	}
+	else {
+		if (servoaantalstops[_servo] > 2)servoaantalstops[_servo]--;
+	}
+	DisplayShow();
+}
+
+void Prg_servospeed(byte _servo, bool _plusmin) {
+	Serial.println(_plusmin);
+	if (_plusmin) {
+		if (servospeed[_servo] < 10)servospeed[_servo]++;
+	}
+	else {
+		if (servospeed[_servo] > 1)servospeed[_servo]--;
+	}
+	DisplayShow();
+}
 //program modes
 void ProgramCom() { //afhandelen program fase in common
 	//called from Prg-up (verhoogt de programfase)
@@ -1116,7 +1404,4 @@ void ProgramStep() { //afhandelen programreeks voor stepper
 		break;
 	}
 	//hierna displayshow>displaystepper
-}
-void ProgramS1() { //afhandelen program reeks servo's? of alleen servo 1?
-
 }
