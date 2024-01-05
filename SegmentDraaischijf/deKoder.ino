@@ -24,10 +24,23 @@ NmraDcc  Dcc;
 #define maxdcc 511  //maximaal aantal dcc decoderadressen
 #define dots digit[1]&=~(1<<7); //de punten in het display, aanzetten
 
+//#define On1 shiftbyte[1] |= (1 << 4); 
+//#define On2 shiftbyte[1] |= (1 << 5); 
+//#define On3 shiftbyte[1] |= (1 << 6); 
+//#define On4 shiftbyte[1] |= (1 << 7);
+//#define Off1 shiftbyte[1] &=~(1 << 4); 
+//#define Off2 shiftbyte[1] &=~(1 << 5);
+//#define Off3 shiftbyte[1] &=~(1 << 6);
+//#define Off4 shiftbyte[1] &=~(1 << 7); 
+//#define Toggle1 shiftbyte[1] ^=(1 << 4); 
+//#define Toggle2 shiftbyte[1] ^=(1 << 5); 
+//#define Toggle3 shiftbyte[1] ^=(1 << 6); 
+//#define Toggle4 shiftbyte[1] ^=(1 << 7); 
+
 const int LimitSpeed = 900;
 const byte AantalProgramFases = 7;
 const byte AantalActies = 7; //uiteindelijk nog bepalen
-const byte AantalOutputFuncties = 6; 
+const byte AantalOutputFuncties = 6;
 const byte StepMaxStops = 8; //max  posities voor de stappenmotor, = 1 decoderadres vol
 const int ServoMinPositie = 80;
 const int ServoMaxPositie = 310;
@@ -53,7 +66,25 @@ unsigned int servo2pos[8];
 byte servostop[2];  //stop waar de servo nu in staat cq naar opweg is
 byte servo; //de actieve servo 0 of 1
 
-byte outputfunctie[4]; //ingestelde functie per output
+byte outputfunctie[4]; //ingestelde functie per output >>EEPROM 20~24
+byte outputfase[4];
+
+//outputtimers (2x)
+struct Timers
+{
+	byte name; //de naam is dus een getal. 45 is knipper in 45 pm, 90= knipper 90pm
+	byte aantalfases;
+	byte aantalkanalen;
+	byte fase;
+	byte pauze[4];
+	byte aantijd[2];
+	byte uittijd[2];
+	bool out[4];
+};
+Timers Timer[2];
+
+byte TimerProgramma[2]; //keuze programma timer 1 (0) en timer 2 (1)
+byte TimerPrograms[6]; //keuze uit 6 programmeerbare timer programmaas
 
 
 unsigned long ServoTimer;
@@ -177,6 +208,12 @@ void Eeprom_read() {
 		outputfunctie[i] = EEPROM.read(20 + i);
 		if (outputfunctie[i] == 0xFF)outputfunctie[i] = 1; //default aan/uit
 	}
+	//timer instellingen in EEPROM 100~199
+	TimerProgramma[0] = EEPROM.read(100);
+	TimerProgramma[1] = EEPROM.read(101);
+	if (TimerProgramma[0] = 0xFF) TimerProgramma[0] = 1; //default voor timer 1 1=90knipper per minuut
+	if (TimerProgramma[1] = 0xFF)TimerProgramma[1] =  0; //default voor timer 2 (nog nader te bepalen)
+
 
 
 	//stappenmotor
@@ -414,6 +451,7 @@ void Dcc_rx(byte _channel, byte _port, bool _onoff) {
 
 	}
 }
+
 //display
 void Display_exe() {
 	displaycount++;
@@ -497,7 +535,7 @@ void DisplayShow() {
 	case 5:
 		DisplayOutput(1);
 		break;
-	case 6: 
+	case 6:
 		DisplayOutput(2);
 		break;
 	case 7:
@@ -594,53 +632,7 @@ void DisplayStepper() {
 		break;
 	}
 }
-void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
-	digit[0] = Letter('c');
-	switch (programfase) {
-		//***********************
-	case 0: //in bedrijf
-		digit[1] = Cijfer(10);
-		digit[2] = Cijfer(10);
-		digit[3] = Cijfer(10);
-		break;
-		//**********************
-	case 1: //instellen DCC decoder adres
-		//twee standen de waarde of de text DCC
-		if (dccprg) { //toon 'DCC'
-			digit[0] = Cijfer(10);
-			digit[1] = Letter('d');
-			digit[2] = Letter('c');
-			digit[3] = Letter('c');
 
-			dccprg = false; //wachtlus instellen, zet dispaly om van 'dcc' ; naar de waarde
-			waittime = 80;
-			waitnext = 2;
-		}
-		else { //toon het DCC adres 			
-			int _dccadres = 1 + ((decoderadres - 1) * 4);
-			DisplayNummer(_dccadres, 4);
-			//for (int i = 0; i < 4; i++) {
-			//	digit[i] = displaycijfers[i];
-			//}
-		}
-		break;
-		//*************************
-	case 2: //nog niks
-		if (confirm) {
-			digit[0] = Cijfer(5);
-			digit[1] = Letter('U');
-			digit[2] = Letter('A');
-			digit[3] = Letter('E');
-		}
-		else {
-			digit[0] = Letter('F');
-			digit[1] = Letter('A');
-			digit[2] = Letter('C');
-			digit[3] = Letter('t');
-		}
-		break;
-	}
-}
 
 byte Cijfer(byte _cijfer) {
 	byte _result;
@@ -746,6 +738,16 @@ byte Letter(char _letter) {
 	}
 	return _result;
 }
+byte DisplayAlias(byte _alias) { //_show=23 vervang digit 2 e 3
+	switch (_alias) {
+	case 0:
+		DisplayNummer(45, 23);
+		break;
+	case 1:
+		DisplayNummer(90, 23);
+		break;
+	}
+}
 
 //drukknoppen en sensoren
 void SW_exe()
@@ -784,7 +786,7 @@ void SW_exe()
 void SWon(byte _sw) {
 	//Serial.print("on  "); Serial.println(_sw);
 	switch (_sw) {
-		//*****************************************SWITCH1***********
+		//*****************************************SWITCH1****Actie knop*******
 	case 0: //switch 1
 		switch (actie) {
 		case 1: //stepper		
@@ -880,7 +882,7 @@ void SWon(byte _sw) {
 			}
 
 		case 4: //Actie output 1
-			OutputSwitch(0,false);
+			OutputSwitch(0, false);
 			break;
 		case 5: //Actie output 2
 			OutputSwitch(1, false);
@@ -905,7 +907,7 @@ void SWon(byte _sw) {
 			case 1:
 				Prg_comdccadres(true);
 				break; //programfase 1
-			case 2: //factory reset
+			case 4: //factory reset
 				Factory();
 			}
 			break; //actie common
@@ -1009,6 +1011,104 @@ void SWoff(byte _sw) {
 		Step_sensor(true);
 		break;
 	}
+}
+
+//common instellingen
+void ProgramCom() { //afhandelen program fase in common
+	//called from Prg-up (verhoogt de programfase)
+	if (programfase > 4)programfase = 0; //aantal programfases per program reeks verschillend
+	scrollmask = 0;
+	switch (programfase) {
+	case 0:
+		Prg_end();
+		break;
+	case 1:  //instellen DCC adres
+		scrollmask = B0110;
+		dccprg = true;
+		break;
+	case 2: //instellen timer 1
+		break;
+	case 3: //instellen timer 2
+		break;
+	case 4: //nog niks, voorlopig ff factory
+		confirm = false;
+		break;
+	}
+	//terug naar prg_up waarin daarna Displayshow>Displaycom
+}
+void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
+	digit[0] = Letter('c');
+	switch (programfase) {
+		//***********************
+	case 0: //in bedrijf
+		digit[1] = Cijfer(10);
+		digit[2] = Cijfer(10);
+		digit[3] = Cijfer(10);
+		break;
+		//**********************
+	case 1: //instellen DCC decoder adres
+		//twee standen de waarde of de text DCC
+		if (dccprg) { //toon 'DCC'
+			digit[0] = Cijfer(10);
+			digit[1] = Letter('d');
+			digit[2] = Letter('c');
+			digit[3] = Letter('c');
+
+			dccprg = false; //wachtlus instellen, zet dispaly om van 'dcc' ; naar de waarde
+			waittime = 80;
+			waitnext = 2;
+		}
+		else { //toon het DCC adres 			
+			int _dccadres = 1 + ((decoderadres - 1) * 4);
+			DisplayNummer(_dccadres, 4);
+			//for (int i = 0; i < 4; i++) {
+			//	digit[i] = displaycijfers[i];
+			//}
+		}
+		break;
+	case 2: //instellen Timer 1
+		digit[0] = Letter('t');
+		digit[1] = Cijfer(1);
+		DisplayAlias(TimerProgramma[0]);
+		dots;
+		break;
+	case 3: //instellen timer 2
+		digit[0] = Letter('t');
+		digit[1] = Cijfer(2);
+		DisplayAlias(TimerProgramma[1]);
+		dots;
+		break;
+	case 4: //factory
+		if (confirm) {
+			digit[0] = Cijfer(5);
+			digit[1] = Letter('U');
+			digit[2] = Letter('A');
+			digit[3] = Letter('E');
+		}
+		else {
+			digit[0] = Letter('F');
+			digit[1] = Letter('A');
+			digit[2] = Letter('C');
+			digit[3] = Letter('t');
+		}
+		break;
+	}
+}
+void Prg_comdccadres(bool plusmin) {
+	dccprg = false;
+	if (plusmin) { //decoderadres verhogen
+		decoderadres++;
+		if (decoderadres > maxdcc)decoderadres = 1; //maxdcc=een #define constante
+	}
+	else { //decoderadres verlagen
+		decoderadres--;
+		if (decoderadres < 1)decoderadres = maxdcc;
+	}
+
+	DisplayShow();
+	waittime = 200;
+	waitnext = 2; //displayshow()
+	dccprg = true;
 }
 
 //stappenmotor
@@ -1202,22 +1302,7 @@ void Prg_end() { //einde programmamode
 	scrollmask = 0;
 	Eeprom_write();
 }
-void Prg_comdccadres(bool plusmin) {
-	dccprg = false;
-	if (plusmin) { //decoderadres verhogen
-		decoderadres++;
-		if (decoderadres > maxdcc)decoderadres = 1; //maxdcc=een #define constante
-	}
-	else { //decoderadres verlagen
-		decoderadres--;
-		if (decoderadres < 1)decoderadres = maxdcc;
-	}
 
-	DisplayShow();
-	waittime = 200;
-	waitnext = 2; //displayshow()
-	dccprg = true;
-}
 void prg_steppos(bool _richting) { //false is naar home, true is van home af
 	if (stepstop == 0)return; //uitstappen als geen positie van de stepper bekend is
 
@@ -1450,24 +1535,7 @@ void Prg_servospeed(byte _servo, bool _plusmin) {
 	DisplayShow();
 }
 //program modes
-void ProgramCom() { //afhandelen program fase in common
-	//called from Prg-up (verhoogt de programfase)
-	if (programfase > 2)programfase = 0; //aantal programfases per program reeks verschillend
-	switch (programfase) {
-	case 0:
-		Prg_end();
-		break;
-	case 1:  //instellen DCC adres
-		scrollmask = B0110;
-		dccprg = true;
-		break;
-	case 2: //nog niks, voorlopig ff factory
-		scrollmask = 0;
-		confirm = false;
-		break;
-	}
-	//terug naar prg_up waarin daarna Displayshow>Displaycom
-}
+
 void ProgramStep() { //afhandelen programreeks voor stepper
 	//called from prg_up
 	if (programfase > 6)programfase = 0; //aantal programfases per program reeks verschillend
@@ -1488,7 +1556,13 @@ void ProgramStep() { //afhandelen programreeks voor stepper
 	//hierna displayshow>displaystepper
 }
 
+//timers tbv de outputs? in stellen in common
+void timer_exe() {
+
+}
 //outputs
+
+
 void OutputSwitch(byte _out, bool _plusmin) {
 	switch (programfase) {
 	case 0: //in bedrijf
@@ -1499,19 +1573,30 @@ void OutputSwitch(byte _out, bool _plusmin) {
 			if (outputfunctie[_out] < AantalOutputFuncties)outputfunctie[_out]++;
 		}
 		else {
-			if (outputfunctie[_out] > 2)outputfunctie[_out]--;
+			if (outputfunctie[_out] > 1)outputfunctie[_out]--;
 		}
 		break;
 	}
 	DisplayShow();
 }
 void OutputActie(byte _out) {
+	switch (outputfunctie[_out]) {
+	case 1: //aan/uit
+		shiftbyte[1] ^= (1 << (_out + 4));
+		break;
+	case 2: //timer 1 links
+
+		break;
+	case 3: //timer 1 rechts
+		break;
+
+	}
 	DisplayShow();
 }
 void ProgramOutput(byte _out) {
 	if (programfase > 1)programfase = 0;
 	scrollmask = 0;
-	switch(programfase){
+	switch (programfase) {
 	case 1: //instellen functie van de output
 		break;
 	}
@@ -1519,7 +1604,7 @@ void ProgramOutput(byte _out) {
 void DisplayOutput(byte _out) {
 	switch (programfase) {
 	case 0:
-	digit[0] = Letter('o');
+		digit[0] = Letter('o');
 		break;
 	case 1:
 		digit[0] = Letter('F');
@@ -1530,22 +1615,24 @@ void DisplayOutput(byte _out) {
 	dots;
 	DisplayNummer(outputfunctie[_out], 23);
 }
+
+
 //Bezet
-	void DisplayBezet() {
-	}
+void DisplayBezet() {
+}
 //Alarm
-	void DisplayAlarm() {
+void DisplayAlarm() {
 
-	}
-	//sensor Home
-	void DisplayHome() {
+}
+//sensor Home
+void DisplayHome() {
 
-	}
-	//Sensor
-	void DisplaySensor() {
+}
+//Sensor
+void DisplaySensor() {
 
-	}
-	//seqence programma volgorde
-	void DisplaySequence() {
+}
+//seqence programma volgorde
+void DisplaySequence() {
 
-	}
+}
