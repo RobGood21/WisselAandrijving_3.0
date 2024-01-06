@@ -24,23 +24,23 @@ NmraDcc  Dcc;
 #define maxdcc 511  //maximaal aantal dcc decoderadressen
 #define dots digit[1]&=~(1<<7); //de punten in het display, aanzetten
 
-//#define On1 shiftbyte[1] |= (1 << 4); 
-//#define On2 shiftbyte[1] |= (1 << 5); 
-//#define On3 shiftbyte[1] |= (1 << 6); 
-//#define On4 shiftbyte[1] |= (1 << 7);
-//#define Off1 shiftbyte[1] &=~(1 << 4); 
-//#define Off2 shiftbyte[1] &=~(1 << 5);
-//#define Off3 shiftbyte[1] &=~(1 << 6);
-//#define Off4 shiftbyte[1] &=~(1 << 7); 
-//#define Toggle1 shiftbyte[1] ^=(1 << 4); 
-//#define Toggle2 shiftbyte[1] ^=(1 << 5); 
-//#define Toggle3 shiftbyte[1] ^=(1 << 6); 
-//#define Toggle4 shiftbyte[1] ^=(1 << 7); 
+#define On1 shiftbyte[1] |= (1 << 4); 
+#define On2 shiftbyte[1] |= (1 << 5); 
+#define On3 shiftbyte[1] |= (1 << 6); 
+#define On4 shiftbyte[1] |= (1 << 7);
+#define Off1 shiftbyte[1] &=~(1 << 4); 
+#define Off2 shiftbyte[1] &=~(1 << 5);
+#define Off3 shiftbyte[1] &=~(1 << 6);
+#define Off4 shiftbyte[1] &=~(1 << 7); 
+#define Toggle1 shiftbyte[1] ^=(1 << 4); 
+#define Toggle2 shiftbyte[1] ^=(1 << 5); 
+#define Toggle3 shiftbyte[1] ^=(1 << 6); 
+#define Toggle4 shiftbyte[1] ^=(1 << 7); 
 
 const int LimitSpeed = 900;
 const byte AantalProgramFases = 7;
-const byte AantalActies = 7; //uiteindelijk nog bepalen
-const byte AantalOutputFuncties = 6;
+const byte AantalActies = 9; //uiteindelijk nog bepalen
+const byte AantalOutputOpties = 8; //0=niks 1=bezet 2=alarm 3=o1 4=o2 5=o3 6=o4 7=t1 8=t2
 const byte StepMaxStops = 8; //max  posities voor de stappenmotor, = 1 decoderadres vol
 const int ServoMinPositie = 80;
 const int ServoMaxPositie = 310;
@@ -65,8 +65,9 @@ unsigned int servo1pos[8];
 unsigned int servo2pos[8];
 byte servostop[2];  //stop waar de servo nu in staat cq naar opweg is
 byte servo; //de actieve servo 0 of 1
+byte servobezetoutput[2];
 
-byte outputfunctie[4]; //ingestelde functie per output >>EEPROM 20~24
+//byte outputfunctie[4]; //ingestelde functie per output >>EEPROM 20~24
 byte outputfase[4];
 
 //outputtimers (2x)
@@ -123,6 +124,7 @@ byte stepstop = 0; //begin positie van stepper na powerup
 
 byte stepdoel = 0;
 byte stepmovefase = 0;
+byte stepbezetoutput; // EEPROM 21
 byte memreg;
 
 unsigned int standstep = 0; //huidige stand van de stepper
@@ -179,8 +181,10 @@ void Eeprom_write() {
 	if (EEPROM.read(17) != servoaantalstops[1])EEPROM.write(17, servoaantalstops[1]);
 	if (EEPROM.read(18) != servospeed[0])EEPROM.write(18, servospeed[0]);
 	if (EEPROM.read(19) != servospeed[1])EEPROM.write(19, servospeed[1]);
-
-	EEPROM.put(50, decoderadres);
+	if (EEPROM.read(20) != stepbezetoutput)EEPROM.write(20, stepbezetoutput);
+	if (EEPROM.read(21) != servobezetoutput[0])EEPROM.write(21, servobezetoutput[0]);
+	if(EEPROM.read(22) != servobezetoutput[1])EEPROM.write(22, servobezetoutput[1]);
+	EEPROM.put(50, decoderadres); //zijn 8 bytes
 
 	//servo's
 	for (byte i = 0; i < ServoMaxStops; i++) {
@@ -198,16 +202,17 @@ void Eeprom_read() {
 	servoaantalstops[1] = EEPROM.read(17);
 	servospeed[0] = EEPROM.read(18);
 	servospeed[1] = EEPROM.read(19);
+	servobezetoutput[0] = EEPROM.read(21);
+	servobezetoutput[1] = EEPROM.read(22);
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
 		if (servospeed[i] > 10)servospeed[i] = 8; //servo default
+		if (servobezetoutput[i] > AantalOutputOpties)servobezetoutput[i] = 0;
 	}
+	stepbezetoutput = EEPROM.read(20); if (stepbezetoutput > 100)stepbezetoutput = 1; //1 moe dan bezet output worden, hier kunnen dus ook timers komen
 
-	//instellen outputfuncties
-	for (byte i = 0; i < 4; i++) {
-		outputfunctie[i] = EEPROM.read(20 + i);
-		if (outputfunctie[i] == 0xFF)outputfunctie[i] = 1; //default aan/uit
-	}
+	
+
 	//timer instellingen in EEPROM 100~199
 	TimerProgramma[0] = EEPROM.read(100);
 	TimerProgramma[1] = EEPROM.read(101);
@@ -265,10 +270,11 @@ void setup() {
 	DDRB |= (63 << 0); //pinnen 8~13 als output
 	PORTB &= ~(63 << 0); //zet pinnen 8~11 laag
 
-	DDRD |= (1 << 7); //pins7,6,5,4 als output pin 7=bezet flag , pin 6 = SRCLK,  pin 5= RCLK,  pin 4=SER	
+	DDRD |= (1 << 7); //pins7,6,5,4 als output pin 7=bezet flag , pin 6 = SRCLK,  pin 5= RCLK,  pin 4=SER	pin3=alarm
 	DDRD |= (1 << 6); //srclk
 	DDRD |= (1 << 5); //rclk
 	DDRD |= (1 << 4); //ser
+	DDRD |= (1 << 3); //output Alarm
 
 	//timer1  voor de servo's, puls van 10us maken (100xp=1ms 200xp=2ms)
 	TCCR1A = 0; //Timer / Counter1 Control Register A
@@ -376,14 +382,7 @@ void Wait() { //called all 20ms from loop
 void NoodStop() {
 	//hier nog iets voor maken
 }
-void Bezet(bool _bezet) {
-	if (_bezet) {
-		PORTD |= (1 << 7); //leds, bezet flag output
-	}
-	else {
-		PORTD &= ~(1 << 7);
-	}
-}
+
 //DCC
 void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower) {
 	//Serial.print("decoderadres "); Serial.println(BoardAddr);
@@ -542,10 +541,10 @@ void DisplayShow() {
 		DisplayOutput(3);
 		break;
 	case 8:
-		DisplayBezet();
+		DisplayOutput(4); //bezet
 		break;
 	case 9:
-		DisplayAlarm();
+		DisplayOutput(5); //alarm
 		break;
 	case 10:
 		DisplayHome();
@@ -563,76 +562,6 @@ void DisplayGetal(byte _nummer, byte _digit) {
 	if (_nummer > 0)_teken = _nummer;
 	digit[_digit] = Cijfer(_teken);
 }
-void DisplayStepper() {
-	//toont texten aan de hand van de programmeer stand en laatste positie van de draaielementen
-	switch (programfase) {
-	case 0: //in bedrijf
-		digit[0] = Letter('b');
-		digit[1] = Cijfer(10);
-		digit[2] = Letter('p');
-
-		if (stepstop == 0) {
-			digit[3] = Letter('-');
-		}
-		else {
-			digit[3] = Cijfer(stepstop);
-		}
-		break;
-
-	case 1: //posities standen van de steppenmotor
-		if (stepstop > 0) {
-			digit[0] = Letter('b');	digit[1] = Letter('_'); digit[2] = Letter('+');
-			DisplayGetal(stepstop, 3);
-		}
-		else {
-			digit[0] = Letter('b');
-			digit[1] = Letter('-'); digit[2] = Letter('-'); digit[2] = Letter('-');
-		}
-
-		break;
-	case 2: //aantal stops van de stepper
-		digit[0] = Letter('b'); //b(yj48-28)c(ount)
-		digit[1] = Letter('c');
-		DisplayNummer(stepaantalstops, 23);
-		//digit[2] = displaycijfers[2];
-		//digit[3] = displaycijfers[3];
-		break;
-	case 3: //min speed stepper
-		digit[0] = Letter('b');
-		digit[1] = Letter('_'); dots;
-		DisplayNummer(speedminfactor, 23);//berekend de digits uit een nummer max 9999
-		//digit[2] = displaycijfers[2];
-		//digit[3] = displaycijfers[3];
-		break;
-	case 4: //max speed stepper
-		digit[0] = Letter('b');
-		digit[1] = Letter('|'); dots;//streepje boven
-		DisplayNummer(speedmaxfactor, 23); //berekend de digits uit een nummer max 9999
-		//digit[2] = displaycijfers[2];
-		//digit[3] = displaycijfers[3];
-		break;
-	case 5: //afremfactor *10=accelspeed.
-		digit[0] = Letter('b');
-		digit[1] = Letter('-');  dots;
-		DisplayNummer(afremfactor, 23); //berekend de digits uit een nummer max 9999
-		//digit[2] = displaycijfers[2];
-		//digit[3] = displaycijfers[3];
-		break;
-	case 6: //default richting stepper naar home
-		digit[0] = Letter('b');
-		digit[1] = Letter('='); dots;
-		if (stephomerichting) {
-			digit[2] = Cijfer(10);
-			digit[3] = B11001100;
-		}
-		else {
-			digit[2] = Cijfer(10);
-			digit[3] = B11011000;
-		}
-		break;
-	}
-}
-
 
 byte Cijfer(byte _cijfer) {
 	byte _result;
@@ -810,6 +739,12 @@ void SWon(byte _sw) {
 		case 7://actie output 4
 			OutputActie(3);
 			break;
+		case 8:
+			OutputActie(4); //actie output bezet
+			break; 
+		case 9: //actie output  bezet
+			OutputActie(5);
+			break;
 		}
 
 		break;
@@ -847,6 +782,9 @@ void SWon(byte _sw) {
 			case 6: //default richting stepper
 				Prg_stephome(true);
 				break;
+			case 7: //output keuze voor bezetstelling
+				Prg_stepbezet(false);
+				break;
 			}
 			break;
 		case 2: //actie: Servo 1
@@ -863,6 +801,9 @@ void SWon(byte _sw) {
 			case 3: //dec servo 1 speed
 				Prg_servospeed(0, false);
 				break;
+			case 4: //dec servo 1 bezet melder naar output
+				Prg_servobezetoutput(0, false);
+					break;
 			}
 			break;
 		case 3: //Actie Servo 2
@@ -879,8 +820,11 @@ void SWon(byte _sw) {
 			case 3: //dec servo 2 speed
 				Prg_servospeed(1, false);
 				break;
+			case 4: //dec servo 2 bezet output keuze
+				Prg_servobezetoutput(1, false);
+				break;
 			}
-
+			break;
 		case 4: //Actie output 1
 			OutputSwitch(0, false);
 			break;
@@ -892,6 +836,12 @@ void SWon(byte _sw) {
 			break;
 		case 7: //Actie output 4
 			OutputSwitch(3, false);
+			break;
+		case 8: //Actie output Bezet
+			OutputSwitch(4, false);
+			break;
+		case 9: //actie output Alarm
+			OutputSwitch(5, false);
 			break;
 		}
 		break;
@@ -935,6 +885,9 @@ void SWon(byte _sw) {
 			case 6: //default draairichting.
 				Prg_stephome(false);
 				break;
+			case 7: //output voor de bezet melding van de stepper
+				Prg_stepbezet(true);
+				break;
 			}
 			break;
 
@@ -951,6 +904,9 @@ void SWon(byte _sw) {
 				break;
 			case 3: //inc servo 1 speed
 				Prg_servospeed(0, true);
+				break;
+			case 4: //inc servo 1 keuze bezetmelding output
+				Prg_servobezetoutput(0, true);
 				break;
 			}
 			break;
@@ -970,8 +926,12 @@ void SWon(byte _sw) {
 			case 3: //inc servo 2 speed
 				Prg_servospeed(1, true);
 				break;
+			case 4: //inc keuze bezet output servo 2
+				Prg_servobezetoutput(1, true);
+				break;
 			}
 			break;
+
 		case 4: //output 1 actie
 			OutputSwitch(0, true);
 			break;
@@ -983,6 +943,12 @@ void SWon(byte _sw) {
 			break;
 		case 7:
 			OutputSwitch(3, true);
+			break;
+		case 8: //output bezet, actie
+			OutputSwitch(4, true);
+			break;
+		case 9: //output alarm actie
+			OutputSwitch(5, true);
 			break;
 		}
 		break;
@@ -1112,6 +1078,7 @@ void Prg_comdccadres(bool plusmin) {
 }
 
 //stappenmotor
+
 void Step_exe() {
 
 	if (stepdrive) {
@@ -1130,6 +1097,80 @@ void Step_exe() {
 			steptimer = micros();
 			Step_steps();
 		}
+	}
+}
+void DisplayStepper() {
+	//toont texten aan de hand van de programmeer stand en laatste positie van de draaielementen
+	switch (programfase) {
+	case 0: //in bedrijf
+		digit[0] = Letter('b');
+		digit[1] = Cijfer(10);
+		digit[2] = Letter('p');
+
+		if (stepstop == 0) {
+			digit[3] = Letter('-');
+		}
+		else {
+			digit[3] = Cijfer(stepstop);
+		}
+		break;
+
+	case 1: //posities standen van de steppenmotor
+		if (stepstop > 0) {
+			digit[0] = Letter('b');	digit[1] = Letter('_'); digit[2] = Letter('+');
+			DisplayGetal(stepstop, 3);
+		}
+		else {
+			digit[0] = Letter('b');
+			digit[1] = Letter('-'); digit[2] = Letter('-'); digit[2] = Letter('-');
+		}
+
+		break;
+	case 2: //aantal stops van de stepper
+		digit[0] = Letter('b'); //b(yj48-28)c(ount)
+		digit[1] = Letter('c');
+		DisplayNummer(stepaantalstops, 23);
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
+		break;
+	case 3: //min speed stepper
+		digit[0] = Letter('b');
+		digit[1] = Letter('_'); dots;
+		DisplayNummer(speedminfactor, 23);//berekend de digits uit een nummer max 9999
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
+		break;
+	case 4: //max speed stepper
+		digit[0] = Letter('b');
+		digit[1] = Letter('|'); dots;//streepje boven
+		DisplayNummer(speedmaxfactor, 23); //berekend de digits uit een nummer max 9999
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
+		break;
+	case 5: //afremfactor *10=accelspeed.
+		digit[0] = Letter('b');
+		digit[1] = Letter('-');  dots;
+		DisplayNummer(afremfactor, 23); //berekend de digits uit een nummer max 9999
+		//digit[2] = displaycijfers[2];
+		//digit[3] = displaycijfers[3];
+		break;
+	case 6: //default richting stepper naar home
+		digit[0] = Letter('b');
+		digit[1] = Letter('='); dots;
+		if (stephomerichting) {
+			digit[2] = Cijfer(10);
+			digit[3] = B11001100;
+		}
+		else {
+			digit[2] = Cijfer(10);
+			digit[3] = B11011000;
+		}
+		break;
+	case 7: //output van de bezet stelling
+		digit[0] = Letter('b');
+		digit[1] = Letter('b');
+		DisplayOutputkeuze(stepbezetoutput);
+		break;
 	}
 }
 void Step_steps() {
@@ -1194,11 +1235,9 @@ void Stepoff() {
 }
 void StepperActie() {
 	//verplaats de stappenmotor
-	Bezet(true); //zet de schijf als bezet.
+	Output_exe(stepbezetoutput,0,true); //bezet stellen, 0=caller stepper, stepbezetoutpu=welke output
 	//DisplayMotor();
 	//stand = _stand;  //misschien is de extra variablele niet nodig..?
-
-
 	stepstop++; //wordt dubbel gedaan
 	if (stepstop > stepaantalstops)stepstop = 1;
 	standdoel = stepper[stepstop - 1];
@@ -1208,7 +1247,6 @@ void StepperActie() {
 	waitnext = 1; //naar Step_move()
 	waittime = 100;
 	DisplayShow();
-
 }
 void Step_sensor(bool onoff) {
 
@@ -1252,57 +1290,12 @@ void Step_move() {
 	case 20: //doel bereikt
 		stepdrive = false;
 		// Stepoff(); verplaatst naar een algemene wacht lus na iedere puls
-		Bezet(false); //geef de schijf vrij, locs kunnen gaan rijden 
+		Output_exe(stepbezetoutput,0,false); //geef de schijf vrij, locs kunnen gaan rijden  0=caller stepper
 		DisplayShow();
 		break;
 
 	}
 }
-
-//program acties
-void Actie_exe(bool _plusmin) {
-	if (_plusmin)actie++; else actie--;   //dit werkt dus!
-	if (actie > AantalActies)actie = 0;
-	DisplayShow();
-}
-void Prg_up() { //volgende programmamode
-	programfase++;
-	switch (actie) {
-	case 0: //common, algemene zaken	
-		ProgramCom();
-		break;
-	case 1://stepper instellingen
-		ProgramStep();
-		break;
-	case 2:
-		ProgramServo(0);
-		break;
-	case 3:
-		ProgramServo(1);
-		break;
-	case 4:
-		ProgramOutput(0);
-		break;
-	case 5:
-		ProgramOutput(1);
-		break;
-	case 6:
-		ProgramOutput(2);
-		break;
-	case 7:
-		ProgramOutput(3);
-		break;
-	}
-	DisplayShow();
-}
-void Prg_end() { //einde programmamode
-	//huidige programmamode opslaan	
-	//DisplayShow();  //??
-	programfase = 0;
-	scrollmask = 0;
-	Eeprom_write();
-}
-
 void prg_steppos(bool _richting) { //false is naar home, true is van home af
 	if (stepstop == 0)return; //uitstappen als geen positie van de stepper bekend is
 
@@ -1367,6 +1360,67 @@ void Prg_stephome(bool _richting) {
 	}
 	DisplayShow();
 }
+void Prg_stepbezet(bool _plusmin) {
+	if (_plusmin) {
+		if (stepbezetoutput < AantalOutputOpties)stepbezetoutput ++;
+	}
+	else {
+		if (stepbezetoutput > 0)stepbezetoutput--;
+	}
+	DisplayShow();
+}
+
+//program acties
+void Actie_exe(bool _plusmin) {
+	if (_plusmin)	{
+		actie++;
+	}
+	else
+	{
+		actie--;
+	}//dit werkt dus!
+	if (actie > AantalActies)actie = 0;
+
+	DisplayShow();
+}
+void Prg_up() { //volgende programmamode
+	programfase++;
+	switch (actie) {
+	case 0: //common, algemene zaken	
+		ProgramCom();
+		break;
+	case 1://stepper instellingen
+		ProgramStep();
+		break;
+	case 2:
+		ProgramServo(0);
+		break;
+	case 3:
+		ProgramServo(1);
+		break;
+	case 4:
+		ProgramOutput(0);
+		break;
+	case 5:
+		ProgramOutput(1);
+		break;
+	case 6:
+		ProgramOutput(2);
+		break;
+	case 7:
+		ProgramOutput(3);
+		break;
+	}
+	DisplayShow();
+}
+void Prg_end() { //einde programmamode
+	//huidige programmamode opslaan	
+	//DisplayShow();  //??
+	programfase = 0;
+	scrollmask = 0;
+	Eeprom_write();
+}
+
 
 //servo's
 void Servo_exe() {
@@ -1386,6 +1440,7 @@ void Servo_exe() {
 	//huidige positie en daaruit voor komende taak bepalen en uitvoeren
 	if (servocurrent[servo] == servotarget[servo]) {
 		servostopcount[servo]++;
+ 		if (servostopcount[servo] >= 100)	Output_exe(servobezetoutput[servo], (servo + 1), false); //reset bezet servo (callers zijn 1 en 2)
 	}
 	else {
 		servolangzaamcount[servo]++;
@@ -1394,7 +1449,6 @@ void Servo_exe() {
 
 			if (servocurrent[servo] < servotarget[servo]) {
 				servocurrent[servo]++;
-
 			}
 			else {
 				servocurrent[servo]--;
@@ -1409,6 +1463,8 @@ void Servo_exe() {
 void ServoActie(byte _servo) {
 	servostop[_servo]++;
 	if (servostop[_servo] > servoaantalstops[_servo])servostop[_servo] = 1;
+
+	Output_exe(servobezetoutput[_servo],(_servo+1), true); //1=caller1, servo1 2=caller 2 servo 2 (_servo+1)
 
 	waitnext = 10 + _servo;
 	waittime = 10;
@@ -1459,17 +1515,19 @@ void DisplayServo(byte _servo) {
 		dots;
 		break;
 	case 3: //snelheid van servoos
-		digit[1] = Letter('>'); //rechtopstaande =teken
+		digit[1] = Letter('>'); //rechtopstaande =(is)teken
 		DisplayNummer(servospeed[_servo], 23);
-		//digit[2] = Cijfer(displaycijfers[2]);
-		//digit[3] = Cijfer(displaycijfers[3]);
 		dots;
+		break;
+	case 4: //bezet output keuze
+		digit[1] = Letter('b');
+		DisplayOutputkeuze(servobezetoutput[_servo]);
 		break;
 	}
 }
 void ProgramServo(byte _servo) { //called from prg_up
 	//programfase inc gebeurt in prg_up
-	if (programfase > 3)programfase = 0;
+	if (programfase >4)programfase = 0;
 	scrollmask = 0;
 	switch (programfase) {
 	case 0:
@@ -1481,6 +1539,8 @@ void ProgramServo(byte _servo) { //called from prg_up
 	case 2: //aantal stops
 		break;
 	case 3: //snelheid, speed
+		break;
+	case 4: //output bij bezet
 		break;
 	}
 	//displayshow volgt nu in prg_up, dit verwijst door naar displayservo
@@ -1524,6 +1584,16 @@ void Prg_servoaantalstops(byte _servo, bool _plusmin) {
 	DisplayShow();
 }
 
+void Prg_servobezetoutput(byte _servo, bool _plusmin) {
+	if (_plusmin) {
+		if (servobezetoutput[_servo] < AantalOutputOpties)servobezetoutput[_servo]++;
+	}
+	else {
+		if (servobezetoutput[_servo] > 0)servobezetoutput[_servo]--;
+	}
+	DisplayShow();
+}
+
 void Prg_servospeed(byte _servo, bool _plusmin) {
 	Serial.println(_plusmin);
 	if (_plusmin) {
@@ -1538,7 +1608,7 @@ void Prg_servospeed(byte _servo, bool _plusmin) {
 
 void ProgramStep() { //afhandelen programreeks voor stepper
 	//called from prg_up
-	if (programfase > 6)programfase = 0; //aantal programfases per program reeks verschillend
+	if (programfase >7)programfase = 0; //aantal programfases per program reeks verschillend
 	scrollmask = 0;
 	switch (programfase) {
 	case 0:
@@ -1562,35 +1632,71 @@ void timer_exe() {
 }
 //outputs
 
+void Output_exe(int _out, byte _caller, bool _onoff) { //0=stepper, 1=servo 1 2=servo2enz
 
-void OutputSwitch(byte _out, bool _plusmin) {
-	switch (programfase) {
-	case 0: //in bedrijf
-		Actie_exe(_plusmin);
-		break;
-	case 1: //instellen functie
-		if (_plusmin) {
-			if (outputfunctie[_out] < AantalOutputFuncties)outputfunctie[_out]++;
-		}
-		else {
-			if (outputfunctie[_out] > 1)outputfunctie[_out]--;
-		}
+	// uitzonderlingen hier kunnen ongewenste schakelingen voorkomen , 
+	// dus een validatie 	van de call kan hier in de switch (komt later misschien)
+	switch (_caller) {
+	case 0: //stepper
 		break;
 	}
+
+	switch (_out) {
+	case 1:
+		if(_onoff)PORTD |= (1 << 7);else PORTD &= ~(1 << 7);	break;
+	case 2:
+		if (_onoff)PORTD |= (1 << 3); else PORTD &= ~(1 << 3);	break;
+	case 3:
+		if (_onoff) { On1; } else Off1;	break;
+	case 4:
+		if (_onoff) { On2; }else Off2;	break;
+	case 5:
+		if (_onoff) { On3; }  else Off3; break;
+	case 6:
+		if (_onoff) { On4; }
+		else Off4; break;
+	case 7:
+		//timer 1 on/off
+		break;
+	case 8:
+		//timer 2 onoff
+		break;
+	}
+}
+void OutputSwitch(byte _out, bool _plusmin) {
+	//voorlopig hebben de outputs geen functies
+
+Actie_exe(_plusmin);
+
 	DisplayShow();
 }
 void OutputActie(byte _out) {
-	switch (outputfunctie[_out]) {
-	case 1: //aan/uit
-		shiftbyte[1] ^= (1 << (_out + 4));
-		break;
-	case 2: //timer 1 links
-
-		break;
-	case 3: //timer 1 rechts
-		break;
-
+	//voorlopig hebben outputs geen functies alleen toggle
+	if (_out < 4) {
+shiftbyte[1] ^= (1 << (_out + 4));
 	}
+	else {
+		switch (_out) {
+		case 4: //Bezet
+			PIND |= (1 << 7);
+			break;
+		case 5: //alarm
+			PIND |= (1 << 3);
+			break;
+		}
+	}
+
+	//switch (outputfunctie[_out]) {
+	//case 1: //aan/uit
+	//	
+	//	break;
+	//case 2: //timer 1 links
+
+	//	break;
+	//case 3: //timer 1 rechts
+	//	break;
+
+	//}
 	DisplayShow();
 }
 void ProgramOutput(byte _out) {
@@ -1602,28 +1708,76 @@ void ProgramOutput(byte _out) {
 	}
 }
 void DisplayOutput(byte _out) {
-	switch (programfase) {
-	case 0:
-		digit[0] = Letter('o');
+	//voorals nog hebben de outputs geen programmeerfuncties
+	digit[0] = Letter('o');
+
+	//switch (programfase) {
+	//case 0:
+	//	digit[0] = Letter('o');
+	//	break;
+	//case 1:
+	//	digit[0] = Letter('F');
+	//	break;
+	//}
+	if (_out < 4) {
+	digit[1] = Cijfer(_out + 1);
+	}
+	else {
+		switch (_out) {
+		case 4: 
+			//Bezet output op PIN 7 (PORTD7)
+			digit[1] = Letter('b');
+			break;
+		case 5:
+			//Alarm output op PIN3 (PORTD3)
+			digit[1] = Letter('A');
+			break;
+		}
+	}	
+	digit[2] = Cijfer(10); digit[3] = Cijfer(10);
+
+//	dots;
+//	DisplayNummer(outputfunctie[_out], 23);
+}
+
+void DisplayOutputkeuze(byte _output) {
+	//toont gekozen output in digit 2 en digit 3
+
+	digit[2] = Letter('o'); //komt 6x voor
+	switch (_output) {
+	case 0: //Geen bezet output
+		DisplayNummer(0, 23);
 		break;
 	case 1:
-		digit[0] = Letter('F');
+		digit[3] = Letter('b');
+		break;
+	case 2:
+		digit[3] = Letter('A');
+		break;
+	case 3:
+		digit[3] = Cijfer(1);
+		break;
+	case 4:
+		digit[3] = Cijfer(2);
+		break;
+	case 5:
+		digit[3] = Cijfer(3);
+		break;
+	case 6:
+		digit[3] = Cijfer(4);
+		break;
+	case 7:
+		digit[2] = Letter('t');
+		digit[3] = Cijfer(1);
+		break;
+	case 8:
+		digit[2] = Letter('t');
+		digit[3] = Cijfer(2);
 		break;
 	}
-
-	digit[1] = Cijfer(_out + 1);
 	dots;
-	DisplayNummer(outputfunctie[_out], 23);
 }
 
-
-//Bezet
-void DisplayBezet() {
-}
-//Alarm
-void DisplayAlarm() {
-
-}
 //sensor Home
 void DisplayHome() {
 
