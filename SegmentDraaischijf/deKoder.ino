@@ -82,8 +82,15 @@ struct Klokken
 };
 Klokken klok[8];
 
-byte timerprogramfase[2];
-byte timeraantalprogramfases[2];
+
+unsigned int timerontijd[2];
+unsigned int timerofftijd[2];
+byte timeroutput[2][6]; //2 timers, iedere timer 6 outputs
+byte timerkeuzeoutput[2]; //welke output ben je aan het instellen
+byte timercycles[2]; //hoe vaak de timer cycle wordt doorlopen 0= continue (default), 200-max
+
+//byte timerprogramfase[2];
+//byte timeraantalprogramfases[2];
 
 unsigned long ServoTimer;
 byte shiftbyte[2];
@@ -210,14 +217,33 @@ void Eeprom_read() {
 		if (servospeed[i] > 10)servospeed[i] = 8; //servo default
 		if (servobezetoutput[i] > AantalOutputOpties)servobezetoutput[i] = 0;
 	}
-	//timers, voorlopig ff 2
-	timeraantalprogramfases[0] = EEPROM.read(23);
-	timeraantalprogramfases[1] = EEPROM.read(24);
+	////timers, voorlopig ff 2 timers, alles  vanaf eeprom 500
+
+	EEPROM.get(500, timerontijd[0]);
+	EEPROM.get(510, timerofftijd[0]);
+	EEPROM.get(520, timerontijd[1]);
+	EEPROM.get(530, timerofftijd[1]);
+	timercycles[0] = EEPROM.read(600);
+	timercycles[1] = EEPROM.read(601);
 	for (int i = 0; i < 2; i++) {
-		if (timeraantalprogramfases[i] > 20)timeraantalprogramfases[i] = 1; //alijd 1 program fase dus, die leeg kan zijn
+		if (timerontijd[i] > 9999)timerontijd[i] = 33; //33x20ms??? = ongeveer 90x per minuut
+		if (timerofftijd[i] > 9999) timerofftijd[i] = 33;
+		if (timercycles[i] > 99 )timercycles[i] = 0; //0=continue defaultwaarde
+
+
+
+		//timer output, per timer max 6 outputs
+		for (byte op = 0; op < 6; op++) {
+			timeroutput[i][op] = EEPROM.read(550 + (i * 10) + op);
+			if (timeroutput[i][op] > 10) {
+				timeroutput[i][op] = 0;
+				//default instellingen timers	
+				if (i == 0 && op == 0)timeroutput[0][0] = 4; //output1
+				if (i == 0 && op == 1)timeroutput[0][1] = 5;//output2
+			}
+		}
+
 	}
-
-
 	stepbezetoutput = EEPROM.read(20); if (stepbezetoutput > 100)stepbezetoutput = 1; //1 moe dan bezet output worden, hier kunnen dus ook timers komen
 
 
@@ -667,11 +693,18 @@ byte Letter(char _letter) {
 	}
 	return _result;
 }
-byte DisplayAlias(byte _alias) { //vervang digit 2 e 3 voor een alias van een nummer
+byte DisplayAlias(byte _alias, bool _actie) { //vervang digit 2 e 3 voor een alias van een nummer
 	switch (_alias) { //alle aanduidingen voor de acties 0~50
 	case 0: //common
-		digit[2] = Cijfer(10);
-		digit[3] = Letter('c');
+		if (_actie) {
+			digit[2] = Cijfer(10);
+			digit[3] = Letter('c');
+		}
+		else {
+			digit[2] = Letter('-');
+			digit[3] = Letter('-');
+		}
+
 		break;
 	case 1: //stepper
 		digit[2] = Cijfer(10);
@@ -1107,7 +1140,7 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 	case 2: //instellen actie na powerup
 		digit[0] = Letter('A');
 		digit[1] = Letter('c');
-		DisplayAlias(actienastart);
+		DisplayAlias(actienastart, true); //true bij actie keuze, false timeroutput keuze
 		dots;
 		break;
 	case 3: //vrij
@@ -1504,8 +1537,7 @@ void Prg_up() { //volgende programmamode
 	DisplayShow();
 }
 void Prg_end() { //einde programmamode
-	//huidige programmamode opslaan	
-	//DisplayShow();  //??
+	Serial.println("programma einde, opslaan in EEPROM");
 	programfase = 0;
 	scrollmask = 0;
 	confirm = true; //dit zorgt ervoor dat de actie knop na een programmeer sessie niet veranderd. 
@@ -1685,7 +1717,7 @@ void Prg_servobezetoutput(byte _servo, bool _plusmin) {
 }
 
 void Prg_servospeed(byte _servo, bool _plusmin) {
-	Serial.println(_plusmin);
+
 	if (_plusmin) {
 		if (servospeed[_servo] < 10)servospeed[_servo]++;
 	}
@@ -1778,18 +1810,6 @@ void OutputActie(byte _out) {
 			break;
 		}
 	}
-
-	//switch (outputfunctie[_out]) {
-	//case 1: //aan/uit
-	//	
-	//	break;
-	//case 2: //timer 1 links
-
-	//	break;
-	//case 3: //timer 1 rechts
-	//	break;
-
-	//}
 	DisplayShow();
 }
 void ProgramOutput(byte _out) {
@@ -1875,7 +1895,6 @@ void DisplayOutputkeuze(byte _output) {
 void Timer_exe(byte _caller) {
 
 }
-
 void DisplayTimer(byte _timer) {
 	//called from Displayshow() 
 	DisplayClear();
@@ -1884,33 +1903,47 @@ void DisplayTimer(byte _timer) {
 		digit[0] = Letter('t');
 		digit[1] = Cijfer(_timer + 1);
 		break;
-	default:
-		switch (timerprogramfase[_timer]) {
-		case 0: //begin sequence fase
-			DisplayNummer(programfase, 23);
-			break;
-		case 1: //eerste sequence actie
-			digit[1] = Letter('t'); //tijd of actie
-			digit[2] = Letter('A');
-			dots;
-			break;
-		}
+	case 1: //on tijd instellen
+		DisplayNummer(timerontijd[_timer], 4);
+		break;
+	case 2: //offtijd instellen
+		DisplayNummer(timerofftijd[_timer], 4);
+		break;
+	case 3: //outputs(6) instellen, met knop 1 outputchannel te kiezen
+		digit[0] = Letter('C');
+		digit[1] = Cijfer(timerkeuzeoutput[_timer] + 1);  //tonen als 1tot6		
+		DisplayAlias(timeroutput[_timer][timerkeuzeoutput[_timer]], false); //in outputkeuze niet de actie c(ommom) kiezen maar een streepje
+		dots;
+		break;
+	case 4: //aantal cycles instellen
+		digit[0] = Letter('c');
+		digit[1] = Letter('A');
+		DisplayNummer(timercycles[_timer], 23);
+		dots;
 		break;
 	}
 }
-
 void TimerSwitch(byte _sw, byte _timer) {
 	//Serial.print("switch: "); Serial.print(_sw); Serial.print("   Timer: "); Serial.println(_timer + 1);
 	//Programfase is al verhoogd in voorgaande Prgup. Prgup wordt gecalled bij druk op knop4 en verwijst naar deze void.
-
+	if (programfase > 4)programfase = 0;
 	switch (_sw) {
 	case 0: //**************switch 1		
-		if (programfase == 0) {
-			//start actie
-		}
-		else {
-			timerprogramfase[_timer]++;
-			DisplayTimer(_timer);
+		switch (programfase) {
+		case 0:
+			break;		
+		case 3: //keuze timeroutput	
+			//volgende outputkanaal alleen te kiezen als voorgaande(deze dus) niet nul is maar een output bevat.
+			if (timeroutput[_timer][timerkeuzeoutput[_timer]] > 0) {
+			timerkeuzeoutput[_timer]++;
+			}
+			else {
+				timerkeuzeoutput[_timer] = 0;
+			}
+
+			if (timerkeuzeoutput[_timer] > 5)timerkeuzeoutput[_timer] = 0;
+			//DisplayTimer(_timer);
+			break;
 		}
 		break;
 
@@ -1919,6 +1952,18 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 0: //in bedrijf lagere actie voor de actie knop instellen
 			Actie_exe(false);
 			break;
+		case 1: //dec on time
+			if (timerontijd[_timer] > 1)timerontijd[_timer]--;
+			break;
+		case 2: //dec off time
+			if (timerofftijd[_timer] > 1)timerofftijd[_timer]--;
+			break;
+		case 3: //dec channel output kiezen 
+			if (timeroutput[_timer][timerkeuzeoutput[_timer]] > 0) timeroutput[_timer][timerkeuzeoutput[_timer]]--;
+			break;
+		case 4: //dec aantgal timer cycles 0=default is doorgaan, continue
+			if (timercycles[_timer] > 0)timercycles[_timer]--;
+			break;
 		}
 		break;
 	case 2: //**************switch 3
@@ -1926,14 +1971,42 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 0: //in bedrijf, hogere actie voor de actie knop instellen
 			Actie_exe(true);
 			break;
+		case 1: //inc on time
+			if (timerontijd[_timer] < 9999)timerontijd[_timer]++;
+			break;
+		case 2: //inc off time
+			if (timerofftijd[_timer] <9999)timerofftijd[_timer]++;
+			break;
+		case 3: //inc channel output kiezen
+			if (timeroutput[_timer][timerkeuzeoutput[_timer]] < AantalActies) timeroutput[_timer][timerkeuzeoutput[_timer]]++;
+			break;
+		case 4: //inc aantalcycles
+			if (timercycles[_timer] < 99)timercycles[_timer]++;
+			break;
 		}
 		break;
 
 	case 3: //*************switch 4, Program switch
-		//programfase is a verhoogt
-		//if (programfase > timeraantalprogramfases[_timer])programfase = 0;
-		//timerprogramfase= nu nul eerste fase in de timer program
+		scrollmask = 0;
+		switch (programfase) {
+		case 0:
+			Prg_end();
+			break;
+		case 1:
+			scrollmask = B0111;
+			break;
+		case 2:
+			scrollmask = B0110;
+			break;
+		case 3:
+			timerkeuzeoutput[_timer] = 0;
+			break;
+		case 4:
+			scrollmask = B0110;
+			break;
+		}
 		break;
 	}
+	DisplayShow();
 }
 //Sensor
