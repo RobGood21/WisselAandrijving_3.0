@@ -95,6 +95,8 @@ bool timeronoff[8]; //timed de timer de ontime of de  offtime, true = offtime
 byte timerfase[8]; //met welke fase, actie is de timer bezig
 byte timeraantaloutputs[8];
 
+byte timerstoppen =B11111111; //als false da wordt timer alleen gewisseld nooit gestopt
+
 unsigned long ServoTimer;
 byte shiftbyte[2];
 byte digit[4];
@@ -187,6 +189,7 @@ void Eeprom_write() {
 	EEPROM.update(24, sensoroutput);
 	EEPROM.update(25, stepoutputtimer[0]);
 	EEPROM.update(26, stepoutputtimer[1]);
+	EEPROM.update(27, timerstoppen);
 	EEPROM.put(50, decoderadres); //zijn 8 bytes
 
 	//servo's
@@ -224,6 +227,7 @@ void Eeprom_read() {
 	servobezetoutput[1] = EEPROM.read(22);
 	stepoutputtimer[0] = EEPROM.read(25);
 	stepoutputtimer[1] = EEPROM.read(26);
+	timerstoppen = EEPROM.read(27);
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
 		if (servospeed[i] > 10)servospeed[i] = 8; //servo default
@@ -232,9 +236,8 @@ void Eeprom_read() {
 	}
 	homeoutput = EEPROM.read(23); if (homeoutput > 50)homeoutput = 0;
 	sensoroutput = EEPROM.read(24); if (sensoroutput > 50)sensoroutput = 0;
-
-
 	//timers
+
 	for (byte i = 0; i < 8; i++) {
 		EEPROM.get(500 + (i * 10), timerontijd[i]);
 		EEPROM.get(600 + (i * 10), timerofftijd[i]);
@@ -2074,7 +2077,7 @@ void Timer_exe() {
 					timeronoff[i] = true;
 					timercount[i] = 0;
 				}
-			}	
+			}
 		}
 	}
 }
@@ -2090,35 +2093,48 @@ void TimerNaOffTijd(byte _timer) {
 
 	timerfase[_timer]++;
 	if (timerfase[_timer] >= timeraantaloutputs[_timer]) {
-
 		//Alle fases doorlopen 
 		if (timercycles[_timer] > 0) {
 			timercyclecount[_timer]++;
+			//Serial.print("timercycle count :"); Serial.println(timercyclecount[_timer]);
+
 			if (timercyclecount[_timer] >= timercycles[_timer]) {
-				TimerStop(_timer);
+				TimerStop(_timer, false);
+				timercyclecount[_timer] = 0;
 				return;
 			}
 		}
-
-
 		timerfase[_timer] = 0; //terug naar eerste fase/ output
 	}
 	//Serial.print("Fase: ");  Serial.println(timerfase[_timer]);
 	TimerActie(_timer, true);
 }
-void TimerStop(byte _timer) {
-	//stopt een timer en zet outputs weer terug
-	Serial.println("STOP");
-	Timer &= ~(1 << _timer);
 
-	//Alle fases, outputs die deze timer op is ingesteld naat off, uit stand zetten.
-	//iedere output, fase haaft daar eiegen reactieop
-	for (byte i = 0; i < TimerAantalFases; i++) {
-		if (timeroutput[_timer][i] > 0) {
-			timerfase[_timer] = i;
-			TimerActie(_timer, false);
+
+
+void TimerStop(byte _timer, bool _timersstoppen) {
+
+	//stopt een timer en zet outputs weer terug
+	byte _output;
+	//	Serial.println("STOP");	
+
+	Serial.print("timersstoppen: ");  Serial.print(_timersstoppen); Serial.print("    Output in timer stop =  ");  Serial.println(_output);
+
+		Timer &= ~(1 << _timer);
+
+		//Alle fases, outputs die deze timer op is ingesteld naat off, uit stand zetten.
+		//iedere output, fase haaft daar eiegen reactieop
+		for (byte i = 0; i < TimerAantalFases; i++) {
+			if (timeroutput[_timer][i] > 0) {
+				timerfase[_timer] = i;
+				_output = timeroutput[_timer][i];
+
+				//uitzondering voor timer die timers aansturen, als aantal cycles > 0 dan stopt de aangestuurde timer niet.			
+
+				//if((_output < 12 )|| (_timersstoppen==true))	
+				TimerActie(_timer, false);
+			}
 		}
-	}
 }
 void DisplayTimer(byte _timer) {
 	//called from Displayshow() 
@@ -2147,6 +2163,17 @@ void DisplayTimer(byte _timer) {
 		DisplayNummer(timercycles[_timer], 23);
 		dots;
 		break;
+	case 5:  //na activatie door een timer, start/stop of toggle aan/uit (geen stop)
+		DisplayClear();
+		if (timerstoppen & (1 << _timer)) {
+			//timer starten en stoppen door andere timer
+			digit[1] = Letter('U'); digit[2] = Letter('U'); dots;
+		}
+		else {
+			//Stand timer (aan/uit) alleen laten wisselen door andere timer
+			digit[1] = Letter('A'); digit[2] = Letter('U');  dots;
+		}
+			break;
 	}
 }
 void TimerActie(byte _timer, bool _natijd) { //_stepper false=stepper en servo's niet stellen 
@@ -2198,10 +2225,16 @@ void TimerActie(byte _timer, bool _natijd) { //_stepper false=stepper en servo's
 		//	TimerSwitch(0, 1);
 		//	break;
 	default:
-		_output = timeroutput[_timer][timerfase[_timer]] - 11;
-		Serial.println(_output);
-		//TimerSwitch(1, actie - 10); 
-		//TimerSwitch(0, actie - 12); //waarom 13 onduidelijk maar dit werkt.
+		_output = timeroutput[_timer][timerfase[_timer]] - 12;
+		//Serial.print("output in timeractie  "); Serial.println(_output);
+
+		if (_natijd) {
+			TimerSwitch(0, _output);
+		}
+		else {
+
+		if(timerstoppen & (1<<_output))  TimerStop(_output, true);
+		}
 		break;
 	}
 }
@@ -2209,19 +2242,20 @@ void TimerSwitch(byte _sw, byte _timer) {
 	//Serial.print("Programfase: "); Serial.print(programfase);  Serial.print(",  switch: "); Serial.print(_sw); Serial.print("   Timer: "); Serial.println(_timer + 1);
 
 	//Programfase is al verhoogd in voorgaande Prgup. Prgup wordt gecalled bij druk op knop4 en verwijst naar deze void.
-	if (programfase > 4)programfase = 0;
+	if (programfase > 5)programfase = 0;
 
 	switch (_sw) {
 	case 0: //**************switch 1		
 		switch (programfase) {
 		case 0:
+
 			Timer ^= (1 << _timer); //zet timer om aan/uit start timer
 			//Timer |= (1 << _timer); //zet de timer aan
 			//init
 
 			if (!(Timer & (1 << _timer))) {
-				TimerStop(_timer);
-					return;
+				TimerStop(_timer, true);
+				return;
 			}
 
 			timeronoff[_timer] = true; //starten in de on time 
@@ -2272,6 +2306,9 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 4: //dec aantgal timer cycles 0=default is doorgaan, continue
 			if (timercycles[_timer] > 0)timercycles[_timer]--;
 			break;
+		case 5: //startstop of toggle aansturing door een andere timer
+			timerstoppen |= (1 << _timer);
+			break;
 		}
 		DisplayShow(21);
 		break;
@@ -2292,6 +2329,9 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 4: //inc aantalcycles
 			if (timercycles[_timer] < 99)timercycles[_timer]++;
 			break;
+		case 5:
+			timerstoppen &= ~(1 << _timer);
+			break;
 		}
 		DisplayShow(22);
 		break;
@@ -2311,8 +2351,10 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 3:
 			timerkeuzeoutput[_timer] = 0;
 			break;
-		case 4:
+		case 4: //cycles
 			scrollmask = B0110;
+			break;
+		case 5: //start/stop door timer aansturing
 			break;
 		}
 		break;
