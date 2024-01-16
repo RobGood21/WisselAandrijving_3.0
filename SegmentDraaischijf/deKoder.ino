@@ -53,6 +53,7 @@ const byte StepMaxStops = 8; //max  posities voor de stappenmotor, = 1 decoderad
 const int ServoMinPositie = 80;
 const int ServoMaxPositie = 310;
 const int ServoMaxStops = 8;
+
 const byte TimerAantalFases = 6;
 
 
@@ -61,6 +62,7 @@ unsigned int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het chann
 unsigned int dccadres = 1; //
 bool dccprg = true; //true=text DCC false=Waarde dcc adres
 byte stepaantalstops = 2; //EEprom 15+
+
 unsigned int servorq[2]; // positie waar servo bij b=volgende puls naar toe gaat
 unsigned int servocurrent[2]; //werkelijke positie van de servo
 unsigned int servotarget[2]; //uiteindelijke doel van de servo
@@ -74,8 +76,12 @@ byte servoaantalstops[2];
 unsigned int servo1pos[8];
 unsigned int servo2pos[8];
 byte servostop[2];  //stop waar de servo nu in staat cq naar opweg is
+byte servostopdisplay[2]; //ositie getoond in display
 byte servo; //de actieve servo 0 of 1
 byte servobezetoutput[2];
+byte servotimeroutput[2][2]; //[]=servo 0/1 [0]=starttimer/[1]=end timer
+byte servowaittime[2];
+
 
 byte outputfase[4];
 
@@ -95,7 +101,7 @@ bool timeronoff[8]; //timed de timer de ontime of de  offtime, true = offtime
 byte timerfase[8]; //met welke fase, actie is de timer bezig
 byte timeraantaloutputs[8];
 
-byte timerstoppen =B11111111; //als false da wordt timer alleen gewisseld nooit gestopt
+byte timerstoppen = B11111111; //als false da wordt timer alleen gewisseld nooit gestopt
 
 unsigned long ServoTimer;
 byte shiftbyte[2];
@@ -190,6 +196,16 @@ void Eeprom_write() {
 	EEPROM.update(25, stepoutputtimer[0]);
 	EEPROM.update(26, stepoutputtimer[1]);
 	EEPROM.update(27, timerstoppen);
+
+	EEPROM.update(28, servotimeroutput[0][0]);
+	EEPROM.update(29, servotimeroutput[0][1]);
+	EEPROM.update(30, servotimeroutput[1][0]);
+	EEPROM.update(31, servotimeroutput[1][1]);
+
+
+
+
+
 	EEPROM.put(50, decoderadres); //zijn 8 bytes
 
 	//servo's
@@ -228,6 +244,11 @@ void Eeprom_read() {
 	stepoutputtimer[0] = EEPROM.read(25);
 	stepoutputtimer[1] = EEPROM.read(26);
 	timerstoppen = EEPROM.read(27);
+	servotimeroutput[0][0] = EEPROM.read(28); if (servotimeroutput[0][0] > 50)servotimeroutput[0][0] = 0;
+	servotimeroutput[0][1] = EEPROM.read(29); if (servotimeroutput[0][1] > 50)servotimeroutput[0][1] = 0;
+	servotimeroutput[1][0] = EEPROM.read(30); if (servotimeroutput[1][0] > 50)servotimeroutput[1][0] = 0;
+	servotimeroutput[1][1] = EEPROM.read(31); if (servotimeroutput[1][1] > 50)servotimeroutput[1][1] = 0;
+
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
 		if (servospeed[i] > 10)servospeed[i] = 8; //servo default
@@ -376,6 +397,7 @@ void loop()
 			SW_exe(); //uitlezen switches en  sensoren.
 			Wait();
 			WaitStepper();
+			WaitServo();
 		}
 	}
 }
@@ -427,6 +449,42 @@ void WaitStepper() {
 			}
 			else {
 				Step_move();
+			}
+		}
+	}
+}
+void WaitServo() {
+	for (byte s = 0; s < 2; s++) {  //2 servo's
+		if (servowaittime[s] > 0) { //wachttijd nog niet afgelopen	
+
+			servowaittime[s]--; //verlaag de wachttijd
+
+			if (servowaittime[s] == 0) { //wacht tijd afgelopen
+
+				//Serial.println("servowait");
+
+				if (servotimeroutput[s][0] > 0) { //er is een starttimer ingesteld
+
+					if (Timer & (1 << servotimeroutput[s][0] - 1)) { //timers van 0~7  timer is actief
+						servowaittime[s] = 50; //wachtlus opnieuw
+					}
+					else {
+						if (s == 0) {
+							Servo1_move();
+						}
+						else {
+							Servo2_move();
+						}
+					}
+				}
+				else {  //geen timer ingesteld
+					if (s == 0) {
+						Servo1_move();
+					}
+					else {
+						Servo2_move();
+					}
+				}
 			}
 		}
 	}
@@ -974,6 +1032,12 @@ void SWon(byte _sw) {
 			case 4: //dec servo 1 bezet melder naar output
 				Prg_servobezetoutput(0, false);
 				break;
+			case 5:
+				Prg_Servotimeroutput(0, 0, false); //=servo 1; starttimer; verlagen
+				break;
+			case 6:
+				Prg_Servotimeroutput(0, 1, false); //=servo 1; einde timer; verlagen
+				break;
 			}
 			break;
 		case 3: //Actie Servo 2
@@ -992,6 +1056,12 @@ void SWon(byte _sw) {
 				break;
 			case 4: //dec servo 2 bezet output keuze
 				Prg_servobezetoutput(1, false);
+				break;
+			case 5:
+				Prg_Servotimeroutput(1, 0, false); //=servo 2; start timer, verlagen
+				break;
+			case 6:
+				Prg_Servotimeroutput(1, 1, false); //=servo 2; einde timer, verlagen
 				break;
 			}
 			break;
@@ -1113,6 +1183,12 @@ void SWon(byte _sw) {
 			case 4: //inc servo 1 keuze bezetmelding output
 				Prg_servobezetoutput(0, true);
 				break;
+			case 5:
+				Prg_Servotimeroutput(0, 0, true);//=servo 1; starttimer; verhogen
+				break;
+			case 6:
+				Prg_Servotimeroutput(0, 1, true); //=servo 1; einde timer; verhogen
+				break;
 			}
 			break;
 
@@ -1132,6 +1208,12 @@ void SWon(byte _sw) {
 				break;
 			case 4: //inc keuze bezet output servo 2
 				Prg_servobezetoutput(1, true);
+				break;
+			case 5:
+				Prg_Servotimeroutput(1, 0, true); //=servo 1; start timer, verhogen
+				break;
+			case 6:
+				Prg_Servotimeroutput(1, 1, true); //=servo 2; einde timer. verhogen
 				break;
 			}
 			break;
@@ -1198,7 +1280,6 @@ void SWon(byte _sw) {
 }
 void SWoff(byte _sw) {
 	scrollcount[_sw] = 0; //reset teller voor het scrollen
-	//Serial.print("off  "); Serial.println(_sw);
 	switch (_sw) {
 	case 4: //sensor knop ingedrukt
 		SensorActie(1, true);
@@ -1676,8 +1757,6 @@ void Prg_StepTimer(byte _tStE, bool _plusmin) {
 	else {
 		if (stepoutputtimer[_tStE] > 0)stepoutputtimer[_tStE]--;
 	}
-
-	//Serial.println(stepoutputtimer[_tStE]);
 	DisplayShow(27);
 }
 
@@ -1739,13 +1818,14 @@ void Prg_up() { //volgende programmamode
 	DisplayShow(13);
 }
 void Prg_end() { //einde programmamode
-	//Serial.println("programma einde, opslaan in EEPROM");
 	programfase = 0;
 	scrollmask = 0;
 	confirm = true; //dit zorgt ervoor dat de actie knop na een programmeer sessie niet veranderd. 
 	Eeprom_write();
 	confirm = false; //reset de flag weer, wordt ook gebruikt bij factory reset
 }
+
+
 //servo's
 void Servo_exe() {
 	byte _langzamer = 0;
@@ -1764,7 +1844,23 @@ void Servo_exe() {
 	//huidige positie en daaruit voor komende taak bepalen en uitvoeren
 	if (servocurrent[servo] == servotarget[servo]) {
 		servostopcount[servo]++;
-		if (servostopcount[servo] >= 100)	Output_exe(servobezetoutput[servo], (servo + 1), false); //reset bezet servo (callers zijn 1 en 2)
+		if (servostopcount[servo] == 100) {
+			Output_exe(servobezetoutput[servo], (servo + 1), false); //reset bezet servo (callers zijn 1 en 2)
+			//einde timer aanroepen
+			//Serial.println("timereinde");
+
+			if (servotimeroutput[servo][1] > 0) {	
+				TimerSwitch(0, servotimeroutput[servo][1] - 1);
+
+				if (!(Timer & (1 << servotimeroutput[servo][1] - 1))) {
+					//Serial.println("timer is uit");
+					//timer is niet aan, komt door dubbele instart, of servo omzetten terwijl servo weer draait, of timer stond nog aan
+					//om en om aan en uit zetten is niet de bedoeling, alleen aan zetten.
+					TimerSwitch(0, servotimeroutput[servo][1] - 1); //nogmaals timer starten
+				}
+			}
+		}
+
 	}
 	else {
 		servolangzaamcount[servo]++;
@@ -1785,24 +1881,33 @@ void Servo_exe() {
 	TIMSK1 |= (1 << 1);
 }
 void ServoActie(byte _servo) {
-	servostop[_servo]++;
-	if (servostop[_servo] > servoaantalstops[_servo])servostop[_servo] = 1;
+
+	servostopdisplay[_servo]++;
+	if (servostopdisplay[_servo] > servoaantalstops[_servo])servostopdisplay[_servo] = 1;
 
 	Output_exe(servobezetoutput[_servo], (_servo + 1), true); //1=caller1, servo1 2=caller 2 servo 2 (_servo+1)
 
-	waitnext = 10 + _servo;
-	waittime = 10;
+	if (servotimeroutput[_servo][0] > 0) { //is er een starttimer ingesteld 
+		TimerSwitch(0, servotimeroutput[_servo][0] - 1);  //timer 1=0; //schakel de timer in 
+	}
+	servowaittime[_servo] = 50; //
+
 	DisplayShow(14);
 }
 void Servo1_move() {
-
-	servotarget[0] = servo1pos[servostop[0] - 1];
+	servostop[0] = servostopdisplay[0]; //servostopdisplay ingesteld in servoactie.
+	servotarget[0] = servo1pos[servostop[0] - 1];  //veranderd target en start de servo
 	servostopcount[0] = 0;
+	DisplayShow(32);
 }
 void Servo2_move() {
+	servostop[1] = servostopdisplay[1];
 	servotarget[1] = servo2pos[servostop[1] - 1];
 	servostopcount[1] = 0;
+	DisplayShow(33);
 }
+
+
 void DisplayServo(byte _servo) {
 
 	//if (_servo == 0)digit[0] = Letter('x'); else digit[0] = Letter('q'); //x/q=teken voor servo 1 of 2 
@@ -1813,7 +1918,7 @@ void DisplayServo(byte _servo) {
 
 		digit[1] = Cijfer(10);
 		digit[2] = Letter('p');
-		if (servostop[_servo] == 0)digit[3] = Letter('-'); else digit[3] = Cijfer(servostop[_servo]);
+		if (servostopdisplay[_servo] == 0)digit[3] = Letter('-'); else digit[3] = Cijfer(servostopdisplay[_servo]);
 		break;
 
 	case 1: //posities instellen
@@ -1825,7 +1930,7 @@ void DisplayServo(byte _servo) {
 			digit[1] = Letter('_');
 			digit[2] = Letter('|'); //bovenstreepje
 
-			if (servostop[_servo] == 0)digit[3] = Letter('-'); else digit[3] = Cijfer(servostop[_servo]);
+			if (servostopdisplay[_servo] == 0)digit[3] = Letter('-'); else digit[3] = Cijfer(servostopdisplay[_servo]);
 		}
 		break;
 	case 2: //aantal stops van een servo instellen, default =2
@@ -1844,11 +1949,23 @@ void DisplayServo(byte _servo) {
 		digit[1] = Letter('b');
 		DisplayOutputkeuze(servobezetoutput[_servo]);
 		break;
+	case 5: //timer voor actie servo
+		digit[0] = Letter('t');
+		digit[1] = Cijfer(5);
+		DisplayNummer(servotimeroutput[_servo][0], 23);
+		dots;
+		break;
+	case 6: //timer na de actie van de servo
+		digit[0] = Letter('t');
+		digit[1] = Letter('E');
+		DisplayNummer(servotimeroutput[_servo][1], 23);
+		dots;
+		break;
 	}
 }
 void ProgramServo(byte _servo) { //called from prg_up
 	//programfase inc gebeurt in prg_up
-	if (programfase > 4)programfase = 0;
+	if (programfase > 6)programfase = 0;
 	scrollmask = 0;
 	switch (programfase) {
 	case 0:
@@ -1857,20 +1974,21 @@ void ProgramServo(byte _servo) { //called from prg_up
 	case 1: //instellen posities
 		scrollmask = B0110;
 		break;
-	case 2: //aantal stops
-		break;
-	case 3: //snelheid, speed
-		break;
-	case 4: //output bij bezet
-		break;
+		//3=aantal stops
+	   //4=snelheid, speed
+	   //5=output bij bezet	
+	  //6=timer voor start servoactie
+	   //7=timer na servo actie
 	}
 	//displayshow volgt nu in prg_up, dit verwijst door naar displayservo
 }
+
 void Prg_servopos(byte _servo, bool _plusmin) {
 	//aanpassen positie
 	//servostop loopt van 0~4 0 stand is onbekend
 	//servo1pos en servo2pos lopen van 0~3 , servo#pos[0] = positie van servostop[1];
 	if (servostop[_servo] == 0)return; //uitstappen
+
 	byte _servostop = servostop[_servo] - 1; //stop omzetten in variable die de juiste stop in de servo posities aanduid,
 
 	if (_servo == 0) {
@@ -1881,7 +1999,7 @@ void Prg_servopos(byte _servo, bool _plusmin) {
 			if (servo1pos[_servostop] > ServoMinPositie)servo1pos[_servostop]--;
 		}
 		DisplayNummer(servo1pos[_servostop], 4); //plaats nummer in het display
-		Servo1_move();
+		Servo1_move();   //????
 	}
 	else {
 		if (_plusmin) {
@@ -1891,7 +2009,7 @@ void Prg_servopos(byte _servo, bool _plusmin) {
 			if (servo2pos[_servostop] > ServoMinPositie)servo2pos[_servostop]--;
 		}
 		DisplayNummer(servo2pos[_servostop], 4); //plaats nummer in het display
-		Servo2_move();
+		Servo2_move(); //?????
 	}
 }
 void Prg_servoaantalstops(byte _servo, bool _plusmin) {
@@ -1921,6 +2039,16 @@ void Prg_servospeed(byte _servo, bool _plusmin) {
 		if (servospeed[_servo] > 1)servospeed[_servo]--;
 	}
 	DisplayShow(17);
+}
+
+void Prg_Servotimeroutput(byte _servo, byte _tse, bool _plusmin) { //tse=timer start of timer end
+	if (_plusmin) {
+		if (servotimeroutput[_servo][_tse] < 8) servotimeroutput[_servo][_tse]++;
+	}
+	else {
+		if (servotimeroutput[_servo][_tse] > 0) servotimeroutput[_servo][_tse]--;
+	}
+	DisplayShow(31);
 }
 
 //program modes
@@ -2015,7 +2143,6 @@ void DisplayOutput(byte _out) {
 	//	dots;
 	//	DisplayNummer(outputfunctie[_out], 23);
 }
-
 void DisplayOutputkeuze(byte _output) {
 	//toont gekozen output in digit 2 en digit 3
 
@@ -2083,21 +2210,16 @@ void Timer_exe() {
 }
 void TimerNaOnTijd(byte _timer) {
 	//timerontijd afgelopen, event call
-	//Serial.print(_timer); Serial.println("  TimerON ");
 	TimerActie(_timer, false);
 
 }
 void TimerNaOffTijd(byte _timer) {
 	//Timerofftijd afgelopen event call
-	//Serial.print(_timer); Serial.println("  TimerOFF ");
-
 	timerfase[_timer]++;
 	if (timerfase[_timer] >= timeraantaloutputs[_timer]) {
 		//Alle fases doorlopen 
 		if (timercycles[_timer] > 0) {
 			timercyclecount[_timer]++;
-			//Serial.print("timercycle count :"); Serial.println(timercyclecount[_timer]);
-
 			if (timercyclecount[_timer] >= timercycles[_timer]) {
 				TimerStop(_timer, false);
 				timercyclecount[_timer] = 0;
@@ -2106,7 +2228,6 @@ void TimerNaOffTijd(byte _timer) {
 		}
 		timerfase[_timer] = 0; //terug naar eerste fase/ output
 	}
-	//Serial.print("Fase: ");  Serial.println(timerfase[_timer]);
 	TimerActie(_timer, true);
 }
 
@@ -2116,25 +2237,22 @@ void TimerStop(byte _timer, bool _timersstoppen) {
 
 	//stopt een timer en zet outputs weer terug
 	byte _output;
-	//	Serial.println("STOP");	
 
-	Serial.print("timersstoppen: ");  Serial.print(_timersstoppen); Serial.print("    Output in timer stop =  ");  Serial.println(_output);
+	Timer &= ~(1 << _timer);
 
-		Timer &= ~(1 << _timer);
+	//Alle fases, outputs die deze timer op is ingesteld naat off, uit stand zetten.
+	//iedere output, fase haaft daar eiegen reactieop
+	for (byte i = 0; i < TimerAantalFases; i++) {
+		if (timeroutput[_timer][i] > 0) {
+			timerfase[_timer] = i;
+			_output = timeroutput[_timer][i];
 
-		//Alle fases, outputs die deze timer op is ingesteld naat off, uit stand zetten.
-		//iedere output, fase haaft daar eiegen reactieop
-		for (byte i = 0; i < TimerAantalFases; i++) {
-			if (timeroutput[_timer][i] > 0) {
-				timerfase[_timer] = i;
-				_output = timeroutput[_timer][i];
+			//uitzondering voor timer die timers aansturen, als aantal cycles > 0 dan stopt de aangestuurde timer niet.			
 
-				//uitzondering voor timer die timers aansturen, als aantal cycles > 0 dan stopt de aangestuurde timer niet.			
-
-				//if((_output < 12 )|| (_timersstoppen==true))	
-				TimerActie(_timer, false);
-			}
+			//if((_output < 12 )|| (_timersstoppen==true))	
+			TimerActie(_timer, false);
 		}
+	}
 }
 void DisplayTimer(byte _timer) {
 	//called from Displayshow() 
@@ -2173,13 +2291,12 @@ void DisplayTimer(byte _timer) {
 			//Stand timer (aan/uit) alleen laten wisselen door andere timer
 			digit[1] = Letter('A'); digit[2] = Letter('U');  dots;
 		}
-			break;
+		break;
 	}
 }
 void TimerActie(byte _timer, bool _natijd) { //_stepper false=stepper en servo's niet stellen 
 	//_natijd=false called na aflopen ontijd, true called na aflopen offtijd
-	//Serial.println(actie);
-	//Serial.println(timeroutput[_timer][timerfase[_timer]]);
+
 	byte _output = 0;
 	switch (timeroutput[_timer][timerfase[_timer]]) { //is de output waar de timer nu op staat
 	case 0: //geen actie
@@ -2226,21 +2343,17 @@ void TimerActie(byte _timer, bool _natijd) { //_stepper false=stepper en servo's
 		//	break;
 	default:
 		_output = timeroutput[_timer][timerfase[_timer]] - 12;
-		//Serial.print("output in timeractie  "); Serial.println(_output);
-
 		if (_natijd) {
 			TimerSwitch(0, _output);
 		}
 		else {
 
-		if(timerstoppen & (1<<_output))  TimerStop(_output, true);
+			if (timerstoppen & (1 << _output))  TimerStop(_output, true);
 		}
 		break;
 	}
 }
 void TimerSwitch(byte _sw, byte _timer) {
-	//Serial.print("Programfase: "); Serial.print(programfase);  Serial.print(",  switch: "); Serial.print(_sw); Serial.print("   Timer: "); Serial.println(_timer + 1);
-
 	//Programfase is al verhoogd in voorgaande Prgup. Prgup wordt gecalled bij druk op knop4 en verwijst naar deze void.
 	if (programfase > 5)programfase = 0;
 
@@ -2441,8 +2554,6 @@ void SensorActie(byte _sensor, bool _onoff) {
 	else { //sensor
 		_output = sensoroutput;
 	}
-
-	Serial.println(_output);
 
 	switch (_output) {
 	case 1: //stepper
