@@ -60,8 +60,18 @@ const byte TimerAantalFases = 6;
 //variabelen
 unsigned int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 EEPROM 50
 unsigned int dccadres = 1; //
+byte dcctype;
 bool dccprg = true; //true=text DCC false=Waarde dcc adres
+
+//max 32 adressen
+byte dcctimer[32]; //timer voor dit adres
+byte dcclaatstecommand[32]; //laatst ontvangen command op dit adres
+
 byte stepaantalstops = 2; //EEprom 15+
+
+
+unsigned long servopulscounter;
+
 
 unsigned int servorq[2]; // positie waar servo bij b=volgende puls naar toe gaat
 unsigned int servocurrent[2]; //werkelijke positie van de servo
@@ -81,6 +91,11 @@ byte servo; //de actieve servo 0 of 1
 byte servobezetoutput[2];
 byte servotimeroutput[2][2]; //[]=servo 0/1 [0]=starttimer/[1]=end timer
 byte servowaittime[2];
+
+
+//temp
+unsigned long testtimer = 0;
+unsigned long testtijd = 0;
 
 
 byte outputfase[4];
@@ -201,11 +216,7 @@ void Eeprom_write() {
 	EEPROM.update(29, servotimeroutput[0][1]);
 	EEPROM.update(30, servotimeroutput[1][0]);
 	EEPROM.update(31, servotimeroutput[1][1]);
-
-
-
-
-
+	EEPROM.update(32, dcctype);
 	EEPROM.put(50, decoderadres); //zijn 8 bytes
 
 	//servo's
@@ -248,6 +259,7 @@ void Eeprom_read() {
 	servotimeroutput[0][1] = EEPROM.read(29); if (servotimeroutput[0][1] > 50)servotimeroutput[0][1] = 0;
 	servotimeroutput[1][0] = EEPROM.read(30); if (servotimeroutput[1][0] > 50)servotimeroutput[1][0] = 0;
 	servotimeroutput[1][1] = EEPROM.read(31); if (servotimeroutput[1][1] > 50)servotimeroutput[1][1] = 0;
+	dcctype = EEPROM.read(32); if (dcctype == 0xFF)dcctype = 2;
 
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
@@ -322,10 +334,18 @@ void debug() {
 }
 void setup() {
 	Serial.begin(9600);
+
 	Dcc.pin(0, 2, 1); //interrupt number 0; pin 2; pullup to pin2
+
 	Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
+
+	//Dcc.init(MAN_ID_DIY,10, 0b10000000, 0); //test
+
+
+
 	//Dcc.init(MAN_ID_DIY, 10, 0b11000000, 0); //bit7 true maakt accessoire decoder, bit6 true geeft decoder per adres
 	//Pinnen
+
 	DDRC = 0; //port C A0~A3 as inputs 
 	PORTC = B00001111; //pullup weerstanden op pin A0~A3, tbv. switches,   sensoren A4&A5 hebben een fysieke 10K pull down
 	DDRB |= (63 << 0); //pinnen 8~13 als output
@@ -337,18 +357,39 @@ void setup() {
 	DDRD |= (1 << 4); //ser
 	DDRD |= (1 << 3); //output Alarm
 
+
 	//timer1  voor de servo's, puls van 10us maken (100xp=1ms 200xp=2ms)
 	TCCR1A = 0; //Timer / Counter1 Control Register A
-	TCCR1B = 0;//  Timer / Counter1 Control Register B
-	TCCR1B |= (1 << 3); //WGM12 set, CTC mode (clear timer on compare met OCR1A)
-	TCCR1B |= (1 << 0); //CS10 prescaler
+	//TCCR1B = 0;//  Timer / Counter1 Control Register B
+
+	//TCCR1B |= (1 << WGM12); //WGM12 set, CTC mode (clear timer on compare met OCR1A)
+
+
+
+	//TCCR1B |= (1 << 0); //CS10 prescaler
+
 	//TCCR1B |= (1 << 1); //CS11 prescaler
 	//TCCR1B |= (1 << 2); //CS12 prescaler
+	// 
 	//TCCR1C  //Timer / Counter1 Control Register C
 	//TCNT1H and TCNT1L – Timer / Counter1 //de feitelijke teller
-	//OCR1A = 500;
-	OCR1AH = 0;
-	OCR1AL = 125;
+
+	//TCCR1B = 10;
+
+
+	//OCR1A = 600;
+	OCR1A = 3200;
+	//OCR1A = 5200;
+		 
+	//OCR1AH = 60;
+	//OCR1AL = 0;
+
+	TIMSK1 |= (1 << 1);
+
+	//Serial.print("ocra: "); Serial.println(OCR1A);
+
+
+
 
 	//timer voor timers 1ms
 	TCCR2A = 0;  // Zet alle bits van register A op 0
@@ -361,6 +402,11 @@ void setup() {
 	// Vergelijkswaarde instellen voor 1 ms puls (16 MHz / 1000 Hz)
 	OCR2A = 155;  //geeft een puls van 9.994ms
 	TIMSK2 |= (1 << OCIE2A); // Timer 2 interrupt inschakelen
+
+	//test timer op timer0 8 bits
+	//kanniet timer0 is in gebruik voor de micros en millis().
+
+
 
 	//initialisaties
 	Init();
@@ -384,11 +430,10 @@ void loop()
 	Step_exe();
 	Display_exe();
 
-	if (millis() - ServoTimer > 4) {
+	if (millis() - ServoTimer > 50) {
 		Servo_exe();
 		ServoTimer = millis();
 	}
-
 	if (millis() - slowtimer > 8) { //timer op 10ms
 		//if (Timer > 0) Timer_exe(); //alleen als er timers 'aan' staan
 		slowtimer = millis();
@@ -398,17 +443,47 @@ void loop()
 			Wait();
 			WaitStepper();
 			WaitServo();
+			DccTimers();
 		}
 	}
 }
+
+
 ISR(TIMER1_COMPA_vect) {
-	servointeruptcount[servo]++;
-	if (servointeruptcount[servo] >= servocurrent[servo]) { //min 65 max 310 geeft 180graden servo
-		TIMSK1 &= ~(1 << 1);
-		servointeruptcount[servo] = 0;
-		PORTB &= ~(1 << (4 + servo)); //4 of 5
-	}
+
+	//PIND |= (1 << 3);
+	//disable timer
+	//PORTB &= ~(1 << (4 + servo));
+
+//Serial.println(TCNT1);
+
+	//TIMSK1 &= ~(1 << 1);
+	// 
+	//PORTB &= ~(1 << 4);
+
+	//TIMSK1 = 0;
+	TCCR1B = 0;
+	TCNT1 = 0;
+	PINB |= (1 << 4);
+	//PORTB &= ~(1 << 4);
+
+	//testtimer++;
+	//if (testtimer > 1000) {
+	//Serial.println(millis()-testtijd);				
+	//	testtijd = millis();
+	//	testtimer = 0;
+	//}
+
+//oude situatie
+	//servointeruptcount[servo]++;
+	//if (servointeruptcount[servo] >= servocurrent[servo]) { //min 65 max 310 geeft 180graden servo
+	//	TIMSK1 &= ~(1 << 1);
+	//	servointeruptcount[servo] = 0;
+	//	PORTB &= ~(1 << (4 + servo)); //4 of 5
+	//}
+
 }
+
 ISR(TIMER2_COMPA_vect) {
 	if (Timer > 0) Timer_exe(); //called om de 10ms
 }
@@ -525,69 +600,37 @@ void NoodStop() {
 
 //DCC
 void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower) {
-	//Serial.print("decoderadres "); Serial.println(BoardAddr);
-	//Serial.print("channel "); Serial.println(OutputPair);
-	byte _channel = 0;
+	//Serial.print("boardadres "); Serial.print(BoardAddr);	Serial.print("   channel "); Serial.print(OutputPair); Serial.print("   port:"); Serial.println(Direction);
+	//eerst filteren, terugbrengen naar 1~32 adressen
+	//Serial.print("decoderadres "); Serial.println(decoderadres);
+	unsigned int _decoder = 0; byte _adres;
+	if (decoderadres <= BoardAddr) {
+		_decoder = BoardAddr - decoderadres;
+		if (_decoder < 8) { //max 8x4=32 dcc adressen
+			_adres = (_decoder * 4) + OutputPair;  //merk op adressen hier van 0~31
 
-	if (BoardAddr - (decoderadres) == 0) {
-		_channel = OutputPair;
-		Dcc_rx(_channel, Direction, OutputPower);
-	}
-	else {
-		if (BoardAddr - (decoderadres) == 1) {
-			_channel = OutputPair + 4;
-			Dcc_rx(_channel, Direction, OutputPower);
+			//Maak een uniek nummer van dit command, voorkom dat de command meerdere malen wordt uitgevoerd
+			byte _unieknummer = (_decoder << 4) | (OutputPair << 2) | (Direction << 1) | OutputPower;
+			//Serial.print("_uniek nummer= "); Serial.println(_unieknummer);	
+			if (_unieknummer == dcclaatstecommand[_adres]) {
+				//vorige command op dit adres  was hetzelfde command
+				if (dcctimer[_adres] > 0)return; //dit command is dubbel
+			}
+			dcctimer[_adres] = 3; //stappen van 20ms
+			dcclaatstecommand[_adres] = _unieknummer;
+			Serial.print("_adres= "); Serial.println(_adres);
+
 		}
 	}
 }
-void Dcc_rx(byte _channel, byte _port, bool _onoff) {
-	//hier komen de dcc commands en kunnen ze worden toegewezen aan een functie, voorlopig even alleen de default
-
-	switch (_channel) {
-	case 0: //stepper
-		//positie stepper=stepstop
-		StepperActie();
-		break;
-	case 1: //servo1
-		break;
-	case 2: //servo2
-		break;
-	case 3: //alarm
-		break;
-	case 4: //out1
-		if (_port && _onoff) {
-			shiftbyte[1] |= (1 << 4);
-		}
-		else {
-			shiftbyte[1] &= ~(1 << 4);
-		}
-		break;
-	case 5: //out2
-		if (_port && _onoff) {
-			shiftbyte[1] |= (1 << 5);
-		}
-		else {
-			shiftbyte[1] &= ~(1 << 5);
-		}
-		break;
-	case 6: //out3
-		if (_port && _onoff) {
-			shiftbyte[1] |= (1 << 6);
-		}
-		else {
-			shiftbyte[1] &= ~(1 << 6);
-		}
-		break;
-	case 7: //out4
-		if (_port && _onoff) {
-			shiftbyte[1] |= (1 << 7);
-		}
-		else {
-			shiftbyte[1] &= ~(1 << 7);
-		}
-		break;
-
+void DccTimers() {
+	for (byte i = 0; i < 32; i++) {
+		if (dcctimer[i] > 0)dcctimer[i]--;
 	}
+}
+void Dcc_exe(byte _adres, byte _channel, byte _port, bool _onoff) {
+
+
 }
 
 //display
@@ -818,7 +861,7 @@ byte Letter(char _letter) {
 	}
 	return _result;
 }
-byte DisplayAlias(byte _alias, bool _actie) { //vervang digit 2 e 3 voor een alias van een nummer
+void DisplayAlias(byte _alias, bool _actie) { //vervang digit 2 e 3 voor een alias van een nummer
 	switch (_alias) { //alle aanduidingen voor de acties 0~50
 	case 0: //common
 		if (_actie) {
@@ -874,7 +917,26 @@ byte DisplayAlias(byte _alias, bool _actie) { //vervang digit 2 e 3 voor een ali
 		digit[2] = Cijfer(5);
 		digit[3] = Letter('E');
 		break;
-
+	case 100: //dcc type 0
+		digit[2] = Cijfer(10);
+		digit[3] = Letter('-');
+		break;
+	case 101: //dcc type 1 4adressen de knoppen
+		digit[2] = Cijfer(10);
+		digit[3] = Cijfer(4);
+		break;
+	case 102: //dcc type 8 (default) alle outputs
+		digit[2] = Cijfer(10);
+		digit[3] = Cijfer(8);
+		break;
+	case 103: //dcc type 16 defatult plus de timers
+		digit[2] = Cijfer(1);
+		digit[3] = Cijfer(6);
+		break;
+	case 104: //dcc type 28 alles
+		digit[2] = Cijfer(3);
+		digit[3] = Cijfer(2);
+		break;
 	default:
 		if (_alias - 12 >= 0) {
 			digit[2] = Letter('t');
@@ -974,10 +1036,13 @@ void SWon(byte _sw) {
 				Actie_exe(false);
 				break;
 			case 1: //instellen DCC adres
-				Prg_comdccadres(false);
+				Prg_comactiestart(false);
 				break;
 			case 2:  //instellen actienastart
-				Prg_comactiestart(false);
+				Prg_comdccadres(false);
+				break;
+			case 3: //instellen dcc type (modus, maar ik kan geen m maken op een 7-segment)
+				Prg_comdcctype(false);
 				break;
 			}
 			break;
@@ -1121,10 +1186,13 @@ void SWon(byte _sw) {
 				Actie_exe(true);
 				break;
 			case 1:
-				Prg_comdccadres(true);
+				Prg_comactiestart(true);
 				break; //programfase 1
 			case 2:
-				Prg_comactiestart(true);
+				Prg_comdccadres(true);
+				break;
+			case 3: //instellen DCC type
+				Prg_comdcctype(true);
 				break;
 			case 4: //factory reset
 				Factory();
@@ -1324,7 +1392,15 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 		digit[3] = Cijfer(10);
 		break;
 		//**********************
-	case 1: //instellen DCC decoder adres
+
+	case 1://instellen actie na powerup
+		digit[0] = Letter('A');
+		digit[1] = Letter('c');
+		DisplayAlias(actienastart, true); //true bij actie keuze, false timeroutput keuze
+		dots;
+		break;
+
+	case 2: //instellen DCC decoder adres
 		//twee standen de waarde of de text DCC
 		if (dccprg) { //toon 'DCC'
 			digit[0] = Cijfer(10);
@@ -1344,15 +1420,11 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 			//}
 		}
 		break;
-	case 2: //instellen actie na powerup
-		digit[0] = Letter('A');
-		digit[1] = Letter('c');
-		DisplayAlias(actienastart, true); //true bij actie keuze, false timeroutput keuze
-		dots;
-		break;
-	case 3: //vrij
+	case 3: //DCC modes instellen
 		DisplayClear();
-		//deze nog vrij
+		digit[0] = Letter('d');
+		digit[1] = Letter('t');
+		DisplayAlias(dcctype + 100, false);
 		dots;
 		break;
 	case 4: //factory
@@ -1397,6 +1469,15 @@ void Prg_comactiestart(bool _plusmin) {
 		if (actienastart == 0xFF)actienastart = AantalActies;
 	}
 	DisplayShow(5);
+}
+void Prg_comdcctype(bool _plusmin) {
+	if (_plusmin) {
+		if (dcctype < 4)dcctype++;
+	}
+	else {
+		if (dcctype > 0)dcctype--;
+	}
+	DisplayShow(40);
 }
 
 //stappenmotor
@@ -1826,8 +1907,31 @@ void Prg_end() { //einde programmamode
 }
 
 
+
+
 //servo's
+
 void Servo_exe() {
+	//called from loop om de 4ms
+	//servo++; if (servo > 1)servo = 0;
+
+	//testtijd = millis();
+
+
+	//TIMSK1 |= (1 << 1);
+	PORTB |= (1 << 4);
+	TCCR1B = 10;
+	
+	//PORTD |= (1 << 3);
+	//PIND |= (1 << 3);
+
+	//puls starten, ISR zal de puls stoppen na een periode tussen 1 en 2 msec.
+	//PORTB |= (1 << (4 + servo));
+
+}
+
+
+void Servo_exeOUD() {
 	byte _langzamer = 0;
 	byte _sneller = 1;
 
@@ -1849,7 +1953,7 @@ void Servo_exe() {
 			//einde timer aanroepen
 			//Serial.println("timereinde");
 
-			if (servotimeroutput[servo][1] > 0) {	
+			if (servotimeroutput[servo][1] > 0) {
 				TimerSwitch(0, servotimeroutput[servo][1] - 1);
 
 				if (!(Timer & (1 << servotimeroutput[servo][1] - 1))) {
