@@ -45,23 +45,24 @@ NmraDcc  Dcc;
 #define ToggleBezet PIND |=(1<<7);
 #define ToggleAlarm PIND |=(1<<3);
 
-const int LimitSpeed = 900;
-const byte AantalProgramFases = 7;
+const int LimitSpeed = 900; //snelheid begrenzen stepper
+//const byte AantalProgramFases = 7; niet in gebruik
 const byte AantalActies = 19; //19 zal de laatste blijven? uiteindelijk nog bepalen 
-const byte AantalOutputOpties = 8; //0=niks 1=bezet 2=alarm 3=o1 4=o2 5=o3 6=o4 7=t1 8=t2
+const byte AantalOutputOpties = 14; //0=niks 1=bezet 2=alarm 3=o1 4=o2 5=o3 6=o4 7~14 timers 1~8
 const byte StepMaxStops = 8; //max  posities voor de stappenmotor, = 1 decoderadres vol
-const int ServoMinPositie = 80;
-const int ServoMaxPositie = 310;
-const int ServoMaxStops = 8;
+const int ServoMinPositie = 1000; //minimale positie voor de servo's 180graden
+const int ServoMaxPositie = 5000; //idem maximaal
+const int ServoMaxStops = 8; //aantal stops
+const int ServoMaxSpeed = 50; //
+const byte TimerAantalFases = 6; //maximaal aantal verschillende outputs lus van een timer
 
-const byte TimerAantalFases = 6;
-
+const byte servocyclespeed = 5; //servo pult komt om de 10 ms (2x servo x 5ms)
 
 //variabelen
 unsigned int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 EEPROM 50
 unsigned int dccadres = 1; //
-byte dcctype;
-bool dccprg = true; //true=text DCC false=Waarde dcc adres
+byte dcctype; //hoofdinstelling van de DCC ontvangst 0=niet,4 8 16 32
+bool dccprg = true; //true=text DCC false=Waarde dcc adres //nodig voor wisselen tussen text 'DCC' en ingestelde adres.
 
 //max 32 adressen
 byte dcctimer[32]; //timer voor dit adres
@@ -78,13 +79,13 @@ unsigned int servocurrent[2]; //werkelijke positie van de servo
 unsigned int servotarget[2]; //uiteindelijke doel van de servo
 unsigned int servointeruptcount[2]; //teller in de ISR
 byte servostopcount[2]; //teller voor uitzetten servo puls
-byte servospeedcount[2];
-byte servospeed[2];
-byte servolangzaamcount[2];
+byte servostep[2]; //afstand in 1 servo cycle
+byte servospeed[2]; //=is de maxmaal te behalen snelheid
 
 byte servoaantalstops[2];
 unsigned int servo1pos[8];
 unsigned int servo2pos[8];
+
 byte servostop[2];  //stop waar de servo nu in staat cq naar opweg is
 byte servostopdisplay[2]; //ositie getoond in display
 byte servo; //de actieve servo 0 of 1
@@ -263,10 +264,15 @@ void Eeprom_read() {
 
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
-		if (servospeed[i] > 10)servospeed[i] = 8; //servo default
+		if (servospeed[i] > ServoMaxSpeed)servospeed[i] = 8; //servo default
 		if (servobezetoutput[i] > AantalOutputOpties)servobezetoutput[i] = 0;
+
+		servocurrent[i] = ServoMinPositie + ((ServoMaxPositie - ServoMinPositie) / 2);
+
 		if (stepoutputtimer[i] > 10)stepoutputtimer[i] = 0;
 	}
+
+
 	homeoutput = EEPROM.read(23); if (homeoutput > 50)homeoutput = 0;
 	sensoroutput = EEPROM.read(24); if (sensoroutput > 50)sensoroutput = 0;
 	//timers
@@ -311,13 +317,16 @@ void Eeprom_read() {
 	accelspeed = 10 * afremfactor;
 
 	//Servoos
-	//standen servo 1
+	//standen servo 1, 
+	unsigned int _steps = (ServoMaxPositie - ServoMinPositie) / 10;
 	for (byte i = 0; i < ServoMaxStops; i++) {
 		EEPROM.get(300 + (i * 10), servo1pos[i]);
-		if (servo1pos[i] > ServoMaxPositie)servo1pos[i] = ServoMinPositie + 10 + (i * 20);
+		if (servo1pos[i] > ServoMaxPositie)servo1pos[i] = (ServoMinPositie + _steps) + (i * _steps);
 
 		EEPROM.get(400 + (i * 10), servo2pos[i]);
-		if (servo2pos[i] > ServoMaxPositie)servo2pos[i] = ServoMinPositie + 10 + (i * 20);
+		if (servo2pos[i] > ServoMaxPositie)servo2pos[i] = (ServoMinPositie + _steps) + (i * _steps);
+
+		//Serial.println(servo1pos[i]);
 	}
 	//DCC
 	EEPROM.get(50, decoderadres);
@@ -336,15 +345,7 @@ void setup() {
 	Serial.begin(9600);
 
 	Dcc.pin(0, 2, 1); //interrupt number 0; pin 2; pullup to pin2
-
 	Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
-
-	//Dcc.init(MAN_ID_DIY,10, 0b10000000, 0); //test
-
-
-
-	//Dcc.init(MAN_ID_DIY, 10, 0b11000000, 0); //bit7 true maakt accessoire decoder, bit6 true geeft decoder per adres
-	//Pinnen
 
 	DDRC = 0; //port C A0~A3 as inputs 
 	PORTC = B00001111; //pullup weerstanden op pin A0~A3, tbv. switches,   sensoren A4&A5 hebben een fysieke 10K pull down
@@ -363,11 +364,7 @@ void setup() {
 	//TCCR1B = 0;//  Timer / Counter1 Control Register B
 
 	//TCCR1B |= (1 << WGM12); //WGM12 set, CTC mode (clear timer on compare met OCR1A)
-
-
-
 	//TCCR1B |= (1 << 0); //CS10 prescaler
-
 	//TCCR1B |= (1 << 1); //CS11 prescaler
 	//TCCR1B |= (1 << 2); //CS12 prescaler
 	// 
@@ -377,18 +374,14 @@ void setup() {
 	//TCCR1B = 10;
 
 
-	//OCR1A = 600;
-	OCR1A = 3200;
+	OCR1A = ServoMinPositie; //700
+	//OCR1A = ServoMaxPositie; //5200
 	//OCR1A = 5200;
-		 
+
 	//OCR1AH = 60;
 	//OCR1AL = 0;
 
 	TIMSK1 |= (1 << 1);
-
-	//Serial.print("ocra: "); Serial.println(OCR1A);
-
-
 
 
 	//timer voor timers 1ms
@@ -405,16 +398,11 @@ void setup() {
 
 	//test timer op timer0 8 bits
 	//kanniet timer0 is in gebruik voor de micros en millis().
-
-
-
-	//initialisaties
+		//initialisaties
 	Init();
 }
 void Init() {
 	Eeprom_read();
-
-	servocurrent[0] = 150; servocurrent[1] = 150;
 	start = true;
 	servostop[0] = 0; servostop[1] = 0;
 	programfase = 0;
@@ -430,7 +418,7 @@ void loop()
 	Step_exe();
 	Display_exe();
 
-	if (millis() - ServoTimer > 50) {
+	if (millis() - ServoTimer > servocyclespeed) {
 		Servo_exe();
 		ServoTimer = millis();
 	}
@@ -448,40 +436,12 @@ void loop()
 	}
 }
 
-
 ISR(TIMER1_COMPA_vect) {
-
-	//PIND |= (1 << 3);
-	//disable timer
-	//PORTB &= ~(1 << (4 + servo));
-
-//Serial.println(TCNT1);
-
-	//TIMSK1 &= ~(1 << 1);
-	// 
-	//PORTB &= ~(1 << 4);
-
-	//TIMSK1 = 0;
-	TCCR1B = 0;
-	TCNT1 = 0;
-	PINB |= (1 << 4);
-	//PORTB &= ~(1 << 4);
-
-	//testtimer++;
-	//if (testtimer > 1000) {
-	//Serial.println(millis()-testtijd);				
-	//	testtijd = millis();
-	//	testtimer = 0;
-	//}
-
-//oude situatie
-	//servointeruptcount[servo]++;
-	//if (servointeruptcount[servo] >= servocurrent[servo]) { //min 65 max 310 geeft 180graden servo
-	//	TIMSK1 &= ~(1 << 1);
-	//	servointeruptcount[servo] = 0;
-	//	PORTB &= ~(1 << (4 + servo)); //4 of 5
-	//}
-
+	cli();
+	TCCR1B = 0; //zet de timer weer uit
+	TCNT1 = 0; //reset de counter?
+	PORTB &= ~(1 << (4 + servo)); //zet servo pin weer laag
+	sei();
 }
 
 ISR(TIMER2_COMPA_vect) {
@@ -1907,52 +1867,27 @@ void Prg_end() { //einde programmamode
 }
 
 
-
-
 //servo's
-
 void Servo_exe() {
 	//called from loop om de 4ms
-	//servo++; if (servo > 1)servo = 0;
+	unsigned int _afstand = 0;
+	servo++; if (servo > 1)servo = 0;
 
-	//testtijd = millis();
-
-
-	//TIMSK1 |= (1 << 1);
-	PORTB |= (1 << 4);
-	TCCR1B = 10;
-	
-	//PORTD |= (1 << 3);
-	//PIND |= (1 << 3);
-
-	//puls starten, ISR zal de puls stoppen na een periode tussen 1 en 2 msec.
-	//PORTB |= (1 << (4 + servo));
-
-}
-
-
-void Servo_exeOUD() {
-	byte _langzamer = 0;
-	byte _sneller = 1;
-
-	//servo's om en om doen
-	servo++; //deze 'servo' is dus de public servo, let op dat je deze niet verwart met de private '_servo'. 
-	if (servo > 1)servo = 0;
-	//uitstappen
+	//uitstappen als er niks hoeft te worden gedaan
 	if (servostop[servo] == 0)return;
 	if (servostopcount[servo] > 100)return;
 
-	//snelheid implementeren >10 versnellen <10 vertragen, niks doen bij 10.		
-	_langzamer = 10 - servospeed[servo];
-
 	//huidige positie en daaruit voor komende taak bepalen en uitvoeren
-	if (servocurrent[servo] == servotarget[servo]) {
-		servostopcount[servo]++;
-		if (servostopcount[servo] == 100) {
-			Output_exe(servobezetoutput[servo], (servo + 1), false); //reset bezet servo (callers zijn 1 en 2)
-			//einde timer aanroepen
-			//Serial.println("timereinde");
+	if (servocurrent[servo] == servotarget[servo]) { //servo staat op nieuwe positie
+		//servocurrent[servo] = servotarget[servo];  //eventuele verschillen weghalen
 
+
+		servostopcount[servo]++;
+		if (servostopcount[servo] > 100) {   //== 100) {
+			Output_exe(servobezetoutput[servo], (servo + 1), false); //reset bezet servo (callers zijn 1 en 2)
+
+			//******************einde timer aanroepen
+			//Serial.println("timereinde");
 			if (servotimeroutput[servo][1] > 0) {
 				TimerSwitch(0, servotimeroutput[servo][1] - 1);
 
@@ -1963,27 +1898,35 @@ void Servo_exeOUD() {
 					TimerSwitch(0, servotimeroutput[servo][1] - 1); //nogmaals timer starten
 				}
 			}
-		}
-
-	}
-	else {
-		servolangzaamcount[servo]++;
-		if (servolangzaamcount[servo] > _langzamer) {
-			servolangzaamcount[servo] = 0;
-
-			if (servocurrent[servo] < servotarget[servo]) {
-				servocurrent[servo]++;
-			}
-			else {
-				servocurrent[servo]--;
-			}
+			//*************************************** einde timer aanroepen
 		}
 	}
+	else { //servo staat nog niet op positie
 
-	//puls starten, ISR zal de puls stoppen na een periode tussen 1 en 2 msec.
+		if (servostep[servo] < 1)servostep[servo] = 1;
+		_afstand = abs(servocurrent[servo] - servotarget[servo]);
+
+		if (servostep[servo] * servostep[servo] > _afstand) {
+			if (servostep[servo] > 1) servostep[servo]--;
+		}
+		else {
+			if (servostep[servo] < servospeed[servo]) servostep[servo]++; //versnellen van de beweging naar max speedelse {
+		}
+
+
+		if (servocurrent[servo] < servotarget[servo]) {
+			servocurrent[servo] += servostep[servo];
+		}
+		else {
+			servocurrent[servo] -= servostep[servo];
+		}
+	}
+	//timer instellen starten
+	OCR1A = servocurrent[servo];
 	PORTB |= (1 << (4 + servo));
-	TIMSK1 |= (1 << 1);
+	TCCR1B = 10; //start de timer1
 }
+
 void ServoActie(byte _servo) {
 
 	servostopdisplay[_servo]++;
@@ -2103,7 +2046,7 @@ void Prg_servopos(byte _servo, bool _plusmin) {
 			if (servo1pos[_servostop] > ServoMinPositie)servo1pos[_servostop]--;
 		}
 		DisplayNummer(servo1pos[_servostop], 4); //plaats nummer in het display
-		Servo1_move();   //????
+		Servo1_move(); //verzet de servo
 	}
 	else {
 		if (_plusmin) {
@@ -2113,7 +2056,7 @@ void Prg_servopos(byte _servo, bool _plusmin) {
 			if (servo2pos[_servostop] > ServoMinPositie)servo2pos[_servostop]--;
 		}
 		DisplayNummer(servo2pos[_servostop], 4); //plaats nummer in het display
-		Servo2_move(); //?????
+		Servo2_move(); //verzet de servo
 	}
 }
 void Prg_servoaantalstops(byte _servo, bool _plusmin) {
@@ -2137,7 +2080,7 @@ void Prg_servobezetoutput(byte _servo, bool _plusmin) {
 void Prg_servospeed(byte _servo, bool _plusmin) {
 
 	if (_plusmin) {
-		if (servospeed[_servo] < 10)servospeed[_servo]++;
+		if (servospeed[_servo] < ServoMaxSpeed)servospeed[_servo]++;
 	}
 	else {
 		if (servospeed[_servo] > 1)servospeed[_servo]--;
@@ -2154,19 +2097,15 @@ void Prg_Servotimeroutput(byte _servo, byte _tse, bool _plusmin) { //tse=timer s
 	}
 	DisplayShow(31);
 }
-
 //program modes
-
-
 //timers tbv de outputs? in stellen in common
 void Output_exe(int _out, byte _caller, bool _onoff) { //0=stepper, 1=servo 1 2=servo2enz
 
-	// uitzonderlingen hier kunnen ongewenste schakelingen voorkomen , 
-	// dus een validatie 	van de call kan hier in de switch (komt later misschien)
-	switch (_caller) {
-	case 0: //stepper
-		break;
-	}
+	//kan een valdatie op de caller worden ingesteld? 19jan niet in gebruik
+	//switch (_caller) {
+	//case 0: //stepper
+	//	break;
+	//}
 
 	switch (_out) {
 	case 1:
@@ -2185,11 +2124,15 @@ void Output_exe(int _out, byte _caller, bool _onoff) { //0=stepper, 1=servo 1 2=
 	case 6:
 		if (_onoff) { On4; }
 		else Off4; break;
-	case 7:
-		//timer 1 on/off
-		break;
-	case 8:
-		//timer 2 onoff
+
+	default:
+		byte _timer = _out - 7;
+		if (_onoff) {
+			TimerSwitch(0, _timer);
+		}
+		else {
+			TimerStop(_timer, true);
+		}
 		break;
 	}
 }
@@ -2273,14 +2216,22 @@ void DisplayOutputkeuze(byte _output) {
 	case 6:
 		digit[3] = Cijfer(4);
 		break;
-	case 7:
+		//case 7:
+		//	digit[2] = Letter('t');
+		//	digit[3] = Cijfer(1);
+		//	break;
+		//case 8:
+		//	digit[2] = Letter('t');
+		//	digit[3] = Cijfer(2);
+		//	break;
+
+	default: //voor de timers 1~8
 		digit[2] = Letter('t');
-		digit[3] = Cijfer(1);
+		digit[3] = Cijfer(_output - 6);
 		break;
-	case 8:
-		digit[2] = Letter('t');
-		digit[3] = Cijfer(2);
-		break;
+
+
+
 	}
 	dots;
 }
