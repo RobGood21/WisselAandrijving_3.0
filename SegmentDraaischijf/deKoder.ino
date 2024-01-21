@@ -68,11 +68,16 @@ bool dccprg = true; //true=text DCC false=Waarde dcc adres //nodig voor wisselen
 byte dcctimer[32]; //timer voor dit adres
 byte dcclaatstecommand[32]; //laatst ontvangen command op dit adres
 
+//delen van het ontvangen dcc command als variabelen om veel doorgeven van deze variabelen tegen te gaan
+byte dcckanaal;
+bool dccport; //rechtoddor of afslaand
+bool dcconoff; //aan of uit
+
 byte stepaantalstops = 2; //EEprom 15+
 
 
-unsigned long servopulscounter;
 
+unsigned long servopulscounter;
 
 unsigned int servorq[2]; // positie waar servo bij b=volgende puls naar toe gaat
 unsigned int servocurrent[2]; //werkelijke positie van de servo
@@ -116,8 +121,9 @@ byte timercyclecount[8]; //teller voor het aantal doorlopen cycles
 bool timeronoff[8]; //timed de timer de ontime of de  offtime, true = offtime
 byte timerfase[8]; //met welke fase, actie is de timer bezig
 byte timeraantaloutputs[8];
-
 byte timerstoppen = B11111111; //als false da wordt timer alleen gewisseld nooit gestopt
+
+byte actienastart; //welke actie er wordt ingestart na powerup, 0 (geen) is default.
 
 unsigned long ServoTimer;
 byte shiftbyte[2];
@@ -125,7 +131,7 @@ byte digit[4];
 byte digitcount = 0;
 
 byte actie; //wat is de ingestelde functie voor de knop1 actie knop
-byte actienastart;
+byte actieknopkeuze;
 byte programfase = 0;
 
 unsigned long slowtimer = 0;
@@ -134,6 +140,7 @@ int waitnext = 0;
 
 byte scrollcount[4]; //teller voor het ingedrukt houden van een knop
 byte scrollmask = 0; //bepaald welke knoppen op welk moment moge scrollen
+byte scrollspeed = 0;
 
 byte readlast = B00001111;
 int stepspeed = 2000; //snelheid stappen in us. 
@@ -197,7 +204,7 @@ void Eeprom_write() {
 	if (EEPROM.read(11) != speedmaxfactor)EEPROM.write(11, speedmaxfactor);
 	if (EEPROM.read(12) != speedminfactor)EEPROM.write(12, speedminfactor);
 	if (EEPROM.read(13) != afremfactor)EEPROM.write(13, afremfactor);
-	if (EEPROM.read(14) != actienastart)EEPROM.write(14, actienastart);
+	if (EEPROM.read(14) != actieknopkeuze)EEPROM.write(14, actieknopkeuze);
 	//dcc
 	if (EEPROM.read(15) != stepaantalstops)EEPROM.write(15, stepaantalstops);
 	if (EEPROM.read(16) != servoaantalstops[0])EEPROM.write(16, servoaantalstops[0]);
@@ -218,6 +225,7 @@ void Eeprom_write() {
 	EEPROM.update(30, servotimeroutput[1][0]);
 	EEPROM.update(31, servotimeroutput[1][1]);
 	EEPROM.update(32, dcctype);
+	EEPROM.update(33, actienastart);
 	EEPROM.put(50, decoderadres); //zijn 8 bytes
 
 	//servo's
@@ -242,9 +250,9 @@ void Eeprom_write() {
 void Eeprom_read() {
 	memreg = EEPROM.read(10); //default =0xFF
 	stephomerichting = memreg & (1 << 0); //startrichting stepper. 
-	actienastart = EEPROM.read(14);
-	if (actienastart > AantalActies)actienastart = 1; //default stepper
-	if (!confirm) actie = actienastart;
+	actieknopkeuze = EEPROM.read(14);
+	if (actieknopkeuze > AantalActies)actieknopkeuze = 1; //default stepper
+	if (!confirm) actie = actieknopkeuze;
 
 	stepaantalstops = EEPROM.read(15); if (stepaantalstops > StepMaxStops)stepaantalstops = 2;
 	servoaantalstops[0] = EEPROM.read(16);
@@ -261,6 +269,7 @@ void Eeprom_read() {
 	servotimeroutput[1][0] = EEPROM.read(30); if (servotimeroutput[1][0] > 50)servotimeroutput[1][0] = 0;
 	servotimeroutput[1][1] = EEPROM.read(31); if (servotimeroutput[1][1] > 50)servotimeroutput[1][1] = 0;
 	dcctype = EEPROM.read(32); if (dcctype == 0xFF)dcctype = 2;
+	actienastart = EEPROM.read(33); if (actienastart == 0xFF)actienastart = 0;
 
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
@@ -344,8 +353,8 @@ void debug() {
 void setup() {
 	Serial.begin(9600);
 
-	Dcc.pin(0, 2, 1); //interrupt number 0; pin 2; pullup to pin2
-	Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
+	//Dcc.pin(0, 2, 1); //interrupt number 0; pin 2; pullup to pin2
+	//Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
 
 	DDRC = 0; //port C A0~A3 as inputs 
 	PORTC = B00001111; //pullup weerstanden op pin A0~A3, tbv. switches,   sensoren A4&A5 hebben een fysieke 10K pull down
@@ -395,11 +404,20 @@ void setup() {
 	// Vergelijkswaarde instellen voor 1 ms puls (16 MHz / 1000 Hz)
 	OCR2A = 155;  //geeft een puls van 9.994ms
 	TIMSK2 |= (1 << OCIE2A); // Timer 2 interrupt inschakelen
-
-	//test timer op timer0 8 bits
-	//kanniet timer0 is in gebruik voor de micros en millis().
-		//initialisaties
 	Init();
+
+
+	//DCC aan of uit
+	if (dcctype > 0) {
+		Dcc.pin(0, 2, 1); //interrupt number 0; pin 2; pullup to pin2
+		Dcc.init(MAN_ID_DIY, 10, 0b10000000, 0); //bit7 true maakt accessoire decoder, bit6 false geeft decoder per decoderadres
+	}
+
+
+	//autostart, vertraagd
+	waitnext = 1;
+	waittime = 100;
+	Wait();
 }
 void Init() {
 	Eeprom_read();
@@ -535,9 +553,8 @@ void Wait() { //called all 20ms from loop
 			case 0: //uitschakelen spoelen na een puls				
 				Stepoff();
 				break;
-			case 1: //wachttijd na draaiopdracht naar het draaien
-				//stepperisbezet = true; //stepper als bezet stellen, motor gaat draaien
-				//Step_move();
+			case 1: //autostart na wachttijd
+				autostart();
 				break;
 			case 2: //display verversen, dcc adres bv.
 				DisplayShow(3);
@@ -558,6 +575,53 @@ void NoodStop() {
 	//hier nog iets voor maken
 }
 
+void autostart() {
+	if (actienastart > 0) {
+		AutoStartActie(actienastart);
+	}
+}
+void AutoStartActie(byte _actie) {
+	switch (_actie) {
+	case 0:		break;
+	case 1: //stepper
+		StepperActie();
+		break;
+	case 2:
+		ServoActie(0);
+		break;
+	case 3:
+		ServoActie(1);
+		break;
+	case 4:
+		On1;
+		break;
+	case 5:
+		On2;
+		break;
+	case 6:
+		On3;
+		break;
+	case 7:
+		On4;
+		break;
+	case 8:
+		OnBezet;
+		break;
+	case 9:
+		OnAlarm;
+		break;
+	case 10:
+		//home overslaan
+		break;
+	case 11:
+		//sensor overslaan
+		break;
+	default: //timers 1~8
+		TimerSwitch(0, _actie - 12);
+		break;
+	}
+}
+
 //DCC
 void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower) {
 	//Serial.print("boardadres "); Serial.print(BoardAddr);	Serial.print("   channel "); Serial.print(OutputPair); Serial.print("   port:"); Serial.println(Direction);
@@ -576,10 +640,13 @@ void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Di
 				//vorige command op dit adres  was hetzelfde command
 				if (dcctimer[_adres] > 0)return; //dit command is dubbel
 			}
-			dcctimer[_adres] = 3; //stappen van 20ms
+			dcctimer[_adres] = 10; //stappen van 20ms,blokkeert zelfde command voor 200ms
 			dcclaatstecommand[_adres] = _unieknummer;
-			Serial.print("_adres= "); Serial.println(_adres);
-
+			dcckanaal = _adres + 1;
+			//dccport = false; if (Direction == 0)dccport = true; //hier is de rechtdoor of afslaand om te keren
+			dccport = Direction;
+			dcconoff = OutputPower;
+			Dcc_exe();
 		}
 	}
 }
@@ -588,10 +655,115 @@ void DccTimers() {
 		if (dcctimer[i] > 0)dcctimer[i]--;
 	}
 }
-void Dcc_exe(byte _adres, byte _channel, byte _port, bool _onoff) {
-
-
+void Dcc_exe() {
+	//Serial.print("Dcckanaal=   "); Serial.print(dcckanaal); Serial.print("  Dcc port= "); Serial.print(dccport); Serial.print("  aan of uit :"); Serial.println(dcconoff);
+	switch (dcctype) {
+	case 0: //dcc uit herstart is nu nodig
+		return;
+		break;
+	case 1:  //type 4 4adressen alleen de 4 knoppen
+		DccType4();
+		break;
+	case 2: //type 8 alle acties stepper, servooos uitgangen
+		DccType8();
+		break;
+	case 3://type 16 als 8 en met 8 timers
+		DccType16();
+		break;
+	case 4: //type 32 8x stepper, 2x8xservoos 6xoutputs ex sensor 8x timers
+		break;
+	case 5: // type 56 als 32 maar stepper en servo standen als single  standen 
+		break;
+	}
 }
+void DccType4() {
+	//port en onoff voorlopig even niet, omschakelen aanuit zetten overal reageert de module nu op
+	switch (dcckanaal) {
+	case 1:
+		SWon(0);
+		break;
+	case 2:
+		SWon(1);
+		break;
+	case 3:
+		SWon(2);
+		break;
+	case 4:
+		SWon(3);
+		break;
+	default:
+		return;
+		break;
+	}
+}
+void DccType8() {
+	//bepalen of aan of uit wordt geschakeld in void aanuit()
+	//bool _aanuit = false;
+	//if (dccport)_aanuit = true;
+	//if (!dcconoff)_aanuit = false;
+	////Serial.println(_aanuit);
+	switch (dcckanaal) {
+	case 1: //stepper
+		StepperActie();
+		break;
+	case 2: //servo 1
+		ServoActie(0);
+		break;
+	case 3: //servo 2
+		ServoActie(1);
+		break;
+	case 4: //outAlarm
+		OffAlarm;
+		if (aanuit())OnAlarm;
+		break;
+	case 5: //out 1
+		Off1;
+		if (aanuit())On1;
+		break;
+	case 6: //out 2
+		Off2;
+		if (aanuit()) On2;
+		break;
+	case 7: //out 3
+		Off3;
+		if (aanuit())On3;
+		break;
+	case 8: //out 4
+		Off4;
+		if (aanuit())On4;
+		break;
+	default:
+		return;
+		break;
+	}
+}
+void DccType16() {
+	if (dcckanaal < 5) { //stepper
+
+	}
+	else if (dcckanaal < 9) { //servo1
+		//doe iets met s1
+	}
+	else if (dcckanaal < 13) {
+		//doe iets met s2
+	}
+	else {
+		switch (dcckanaal) {
+
+		}
+	}
+}
+
+bool aanuit() {
+	bool _aanuit = false;
+	if (dccport)_aanuit = true;
+	if (!dcconoff)_aanuit = false;
+
+	Serial.println(_aanuit);
+
+	return _aanuit;
+}
+
 
 //display
 void Display_exe() {
@@ -712,7 +884,6 @@ void DisplayClear() {
 		digit[i] = 0xFF;
 	}
 }
-
 
 byte Cijfer(byte _cijfer) {
 	byte _result;
@@ -928,13 +1099,18 @@ void SW_exe()
 	//scrollen
 	for (byte i = 0; i < 4; i++) {
 		if (scrollmask & (1 << i)) { //alleen als scrollmask voor deze knop true is
+
+
+			//DIT IS fout  scrollspeed blijft oplopen...
+
 			if ((_read & (1 << i)) == false) { //knop ingedrukt
-				if (scrollcount[i] > 20) {
-					SWon(i);
-				}
-				else {
+
+				if (scrollcount[i] < 60) {
 					scrollcount[i]++;
+					if (scrollcount[i] == 59) 	scrollspeed++;
+
 				}
+				if (scrollcount[i] > 20) SWon(i);
 			}
 		}
 	}
@@ -946,6 +1122,8 @@ void SWon(byte _sw) {
 		//*****************************************SWITCH1****Actie knop*******
 	case 0: //switch 1
 		switch (actie) {
+		case 0: //common
+			break;
 		case 1: //stepper		
 			if (programfase == 0) StepperActie(); //alleen positie wisselen in bedrijfsstand
 			break;
@@ -995,15 +1173,19 @@ void SWon(byte _sw) {
 			case 0:
 				Actie_exe(false);
 				break;
-			case 1: //instellen DCC adres
-				Prg_comactiestart(false);
+			case 1: //instellen actie op de actieknop
+				Prg_comactieknop(false);
 				break;
-			case 2:  //instellen actienastart
+			case 2: //instellen actie na powerup(start)
+				Prg_autostart(false);
+				break;
+			case 3:  //instellen DCC (decoder)adres
 				Prg_comdccadres(false);
 				break;
-			case 3: //instellen dcc type (modus, maar ik kan geen m maken op een 7-segment)
+			case 4: //instellen dcc type (modus, maar ik kan geen m maken op een 7-segment)
 				Prg_comdcctype(false);
 				break;
+				//5=factory
 			}
 			break;
 		case 1: //actie: stepper
@@ -1145,16 +1327,19 @@ void SWon(byte _sw) {
 			case 0:
 				Actie_exe(true);
 				break;
-			case 1:
-				Prg_comactiestart(true);
-				break; //programfase 1
-			case 2:
+			case 1: //instellen actie op de actieknop
+				Prg_comactieknop(true);
+				break;
+			case 2: //instellen actie na power-up
+				Prg_autostart(true);
+				break;
+			case 3: //DCCadres
 				Prg_comdccadres(true);
 				break;
-			case 3: //instellen DCC type
+			case 4: //instellen DCC type
 				Prg_comdcctype(true);
 				break;
-			case 4: //factory reset
+			case 5: //factory reset
 				Factory();
 			}
 			break; //actie common
@@ -1308,6 +1493,7 @@ void SWon(byte _sw) {
 }
 void SWoff(byte _sw) {
 	scrollcount[_sw] = 0; //reset teller voor het scrollen
+	scrollspeed = 0;
 	switch (_sw) {
 	case 4: //sensor knop ingedrukt
 		SensorActie(1, true);
@@ -1322,27 +1508,27 @@ void SWoff(byte _sw) {
 //common instellingen
 void ProgramCom() { //afhandelen program fase in common
 	//called from Prg-up (verhoogt de programfase)
-	if (programfase > 4)programfase = 0; //aantal programfases per program reeks verschillend
+	if (programfase > 5)programfase = 0; //aantal programfases per program reeks verschillend
 	scrollmask = 0;
 	switch (programfase) {
 	case 0:
 		Prg_end();
 		break;
-	case 1:  //instellen DCC adres
+		//1 Keuze actie voor de actieknop
+		//2keuze actie voor de autostart, wordt gedaan direct na powerup		
+	case 3:  //instellen DCC adres
 		scrollmask = B0110;
 		dccprg = true;
 		break;
-	case 2: //keuze actie na powerup
-		break;
-	case 3: //instellen timer 2, deze is vrij
-		break;
-	case 4: //nog niks, voorlopig ff factory
+		//4 keuze van dcc type, herstart hierna nodig
+	case 5: //factory
 		confirm = false;
 		break;
 	}
 	//terug naar prg_up waarin daarna Displayshow>Displaycom
 }
 void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
+	DisplayClear();
 	digit[0] = Letter('c');
 	switch (programfase) {
 		//***********************
@@ -1353,14 +1539,20 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 		break;
 		//**********************
 
-	case 1://instellen actie na powerup
+	case 1://instellen actie op de actieknop(1)
 		digit[0] = Letter('A');
 		digit[1] = Letter('c');
-		DisplayAlias(actienastart, true); //true bij actie keuze, false timeroutput keuze
+		DisplayAlias(actieknopkeuze, true); //true bij actie keuze, false timeroutput keuze
+		dots;
+		break;
+	case 2: //AS =actie na start, powerup
+		digit[0] = Letter('A');
+		digit[1] = Cijfer(5);
+		DisplayAlias(actienastart, false);
 		dots;
 		break;
 
-	case 2: //instellen DCC decoder adres
+	case 3: //instellen DCC decoder adres
 		//twee standen de waarde of de text DCC
 		if (dccprg) { //toon 'DCC'
 			digit[0] = Cijfer(10);
@@ -1380,14 +1572,14 @@ void DisplayCom() { //algemene instellingen knop1 heeft (nog) geen functie
 			//}
 		}
 		break;
-	case 3: //DCC modes instellen
+	case 4: //DCC modes instellen
 		DisplayClear();
 		digit[0] = Letter('d');
 		digit[1] = Letter('t');
 		DisplayAlias(dcctype + 100, false);
 		dots;
 		break;
-	case 4: //factory
+	case 5: //factory
 		if (confirm) {
 			digit[0] = Cijfer(5);
 			digit[1] = Letter('U');
@@ -1419,16 +1611,27 @@ void Prg_comdccadres(bool plusmin) {
 	waitnext = 2; //displayshow()
 	dccprg = true;
 }
-void Prg_comactiestart(bool _plusmin) {
+void Prg_comactieknop(bool _plusmin) {
 	if (_plusmin) {
-		actienastart++;
-		if (actienastart > AantalActies)actienastart = 0;
+		actieknopkeuze++;
+		if (actieknopkeuze > AantalActies)actieknopkeuze = 0;
 	}
 	else {
-		actienastart--;
-		if (actienastart == 0xFF)actienastart = AantalActies;
+		actieknopkeuze--;
+		if (actieknopkeuze == 0xFF)actieknopkeuze = AantalActies;
 	}
 	DisplayShow(5);
+}
+void Prg_autostart(bool _plusmin) {
+	if (_plusmin) {
+		if (actienastart < AantalActies)actienastart++;
+		if (actienastart == 10)actienastart = 12; //10(home) en 11(sensor) overslaan
+	}
+	else {
+		if (actienastart > 0)actienastart--;
+		if (actienastart == 11)actienastart = 9;
+	}
+	DisplayShow(40);
 }
 void Prg_comdcctype(bool _plusmin) {
 	if (_plusmin) {
@@ -1439,6 +1642,7 @@ void Prg_comdcctype(bool _plusmin) {
 	}
 	DisplayShow(40);
 }
+
 
 //stappenmotor
 
@@ -1932,6 +2136,7 @@ void ServoActie(byte _servo) {
 	servostopdisplay[_servo]++;
 	if (servostopdisplay[_servo] > servoaantalstops[_servo])servostopdisplay[_servo] = 1;
 
+
 	Output_exe(servobezetoutput[_servo], (_servo + 1), true); //1=caller1, servo1 2=caller 2 servo 2 (_servo+1)
 
 	if (servotimeroutput[_servo][0] > 0) { //is er een starttimer ingesteld 
@@ -2103,11 +2308,15 @@ void Output_exe(int _out, byte _caller, bool _onoff) { //0=stepper, 1=servo 1 2=
 
 	//kan een valdatie op de caller worden ingesteld? 19jan niet in gebruik
 	//switch (_caller) {
-	//case 0: //stepper
-	//	break;
+	//case 0: 
+	//break;
 	//}
+	//Serial.println(_out);
 
 	switch (_out) {
+	case 0:
+		return;
+		break;
 	case 1:
 		if (_onoff)PORTD |= (1 << 7); else PORTD &= ~(1 << 7);	break;
 	case 2:
@@ -2286,8 +2495,6 @@ void TimerNaOffTijd(byte _timer) {
 	TimerActie(_timer, true);
 }
 
-
-
 void TimerStop(byte _timer, bool _timersstoppen) {
 
 	//stopt een timer en zet outputs weer terug
@@ -2411,6 +2618,18 @@ void TimerActie(byte _timer, bool _natijd) { //_stepper false=stepper en servo's
 void TimerSwitch(byte _sw, byte _timer) {
 	//Programfase is al verhoogd in voorgaande Prgup. Prgup wordt gecalled bij druk op knop4 en verwijst naar deze void.
 	if (programfase > 5)programfase = 0;
+	byte _scrollsteps = 0;
+	switch (scrollspeed) {
+	case 0:
+		_scrollsteps = 1;
+		break;
+	case 1:
+		_scrollsteps = 10;
+		break;
+	default:
+		//Serial.println(scrollspeed);
+		break;
+	}
 
 	switch (_sw) {
 	case 0: //**************switch 1		
@@ -2429,6 +2648,7 @@ void TimerSwitch(byte _sw, byte _timer) {
 			timeronoff[_timer] = true; //starten in de on time 
 			timercyclecount[_timer] = 0; //reset teller voor het aantal cycli
 			timerfase[_timer] = 0; //instellen op eerste actie in de acties voor deze timer
+			timercount[_timer] = 0; //reset de teller
 
 			//aantal ingestelde outputs bepalen
 			timeraantaloutputs[_timer] = 0;
@@ -2463,10 +2683,11 @@ void TimerSwitch(byte _sw, byte _timer) {
 			Actie_exe(false);
 			break;
 		case 1: //dec on time
-			if (timerontijd[_timer] > 1)timerontijd[_timer]--;
+			if (timerontijd[_timer] > _scrollsteps)timerontijd[_timer] -= _scrollsteps;
+
 			break;
 		case 2: //dec off time
-			if (timerofftijd[_timer] > 1)timerofftijd[_timer]--;
+			if (timerofftijd[_timer] > _scrollsteps)timerofftijd[_timer] -= _scrollsteps;
 			break;
 		case 3: //dec channel output kiezen 
 			if (timeroutput[_timer][timerkeuzeoutput[_timer]] > 0) timeroutput[_timer][timerkeuzeoutput[_timer]]--;
@@ -2486,13 +2707,13 @@ void TimerSwitch(byte _sw, byte _timer) {
 			Actie_exe(true);
 			break;
 		case 1: //inc on time
-			if (timerontijd[_timer] < 9999)timerontijd[_timer]++;
+			if (timerontijd[_timer] < 10000 - _scrollsteps)timerontijd[_timer] += _scrollsteps;
 			break;
 		case 2: //inc off time
-			if (timerofftijd[_timer] < 9999)timerofftijd[_timer]++;
+			if (timerofftijd[_timer] < (10000 - _scrollsteps))timerofftijd[_timer] += _scrollsteps;
 			break;
-		case 3: //inc channel output kiezen
-			if (timeroutput[_timer][timerkeuzeoutput[_timer]] < AantalActies - 2) timeroutput[_timer][timerkeuzeoutput[_timer]]++;
+		case 3: //inc channel output kiezen (aantalacties-2???)
+			if (timeroutput[_timer][timerkeuzeoutput[_timer]] < AantalActies) timeroutput[_timer][timerkeuzeoutput[_timer]]++;
 			break;
 		case 4: //inc aantalcycles
 			if (timercycles[_timer] < 99)timercycles[_timer]++;
@@ -2529,7 +2750,9 @@ void TimerSwitch(byte _sw, byte _timer) {
 	}
 	//DisplayShow(19); //deze algemene displayshow genereerd dubbele uitvoering van displayshow
 }
-
+void Prg_timertijd(byte _timer, bool _updown, bool _onofftijd) {
+	//nog niet in gebruik?
+}
 
 //Sensoren
 void DisplayHome() {
