@@ -154,7 +154,9 @@ unsigned long steptimer;
 byte stepfase = 0; //in fullstep max4 in halfstep max 8
 bool steprichting = false;
 bool stephomerichting = true; //naar eeprom, is bit 0 van memreg, true is altijd default voor de memreg bits
-bool stepdrive = false;
+bool stepdrive = false; //stepper draaien
+bool stepdrivelaatst = false; //opslaan stepper draaien
+//als de timer voor een servo loopt is het draaien van de stepper onderbroken.
 bool  start = true; //eerste start
 bool confirm = false;
 bool stepperisbezet = false;
@@ -459,6 +461,10 @@ ISR(TIMER1_COMPA_vect) {
 	TCCR1B = 0; //zet de timer weer uit
 	TCNT1 = 0; //reset de counter?
 	PORTB &= ~(1 << (4 + servo)); //zet servo pin weer laag
+
+	//geef stepper weer vrij
+	stepdrive = stepdrivelaatst;
+
 	sei();
 }
 
@@ -656,7 +662,7 @@ void DccTimers() {
 	}
 }
 void Dcc_exe() {
-	//Serial.print("Dcckanaal=   "); Serial.print(dcckanaal); Serial.print("  Dcc port= "); Serial.print(dccport); Serial.print("  aan of uit :"); Serial.println(dcconoff);
+	Serial.print("Dcckanaal=   "); Serial.print(dcckanaal); Serial.print("  Dcc port= "); Serial.print(dccport); Serial.print("  aan of uit :"); Serial.println(dcconoff);
 	switch (dcctype) {
 	case 0: //dcc uit herstart is nu nodig
 		return;
@@ -671,6 +677,7 @@ void Dcc_exe() {
 		DccType16();
 		break;
 	case 4: //type 32 8x stepper, 2x8xservoos 6xoutputs ex sensor 8x timers
+		DccType32();
 		break;
 	case 5: // type 56 als 32 maar stepper en servo standen als single  standen 
 		break;
@@ -697,20 +704,18 @@ void DccType4() {
 	}
 }
 void DccType8() {
-	//bepalen of aan of uit wordt geschakeld in void aanuit()
-	//bool _aanuit = false;
-	//if (dccport)_aanuit = true;
-	//if (!dcconoff)_aanuit = false;
-	////Serial.println(_aanuit);
 	switch (dcckanaal) {
 	case 1: //stepper
 		StepperActie();
+		DisplayKort(1);
 		break;
 	case 2: //servo 1
 		ServoActie(0);
+		DisplayKort(2);
 		break;
 	case 3: //servo 2
 		ServoActie(1);
+		DisplayKort(3);
 		break;
 	case 4: //outAlarm
 		OffAlarm;
@@ -738,16 +743,49 @@ void DccType8() {
 	}
 }
 void DccType16() {
-	if (dcckanaal < 5) { //stepper
+	if (dcckanaal < 9) {
+		DccType8();
+	}
+	else {
+		if (dccport) { //timer starten
+			TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7
+			//controleren of echt aan gegaan, timers hebben heel veel toggle dingen onderweg, hier timer hard aan zetten.
+			if (!(Timer & (1 << dcckanaal - 9))) {
+				TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7				
+			}
 
+		}
+		else { //timer stoppen
+			TimerStop(dcckanaal - 9, true);
+			
+		}
+DisplayKort(dcckanaal+2);
+	}
+}
+void DccType32() {
+	byte _stand = 0;
+	if (dcckanaal < 5) { //stepper
+		_stand = ((dcckanaal - 1) * 2) + 1;
+		if (dccport)_stand++; //1~8
+		//Serial.println(_stand);
+		StepDcc(_stand);
 	}
 	else if (dcckanaal < 9) { //servo1
 		//doe iets met s1
+		_stand = ((dcckanaal - 5) * 2) + 1;
+		if (dccport)_stand++;
+		ServoDcc(0, _stand);
+		//Serial.println(_stand);
 	}
 	else if (dcckanaal < 13) {
-		//doe iets met s2
+		_stand = ((dcckanaal - 9) * 2) + 1;
+		if (dccport)_stand++;
+		ServoDcc(1, _stand);
+		//Serial.println(_stand);
+
 	}
 	else {
+		Serial.println("iets anders");
 		switch (dcckanaal) {
 
 		}
@@ -758,13 +796,47 @@ bool aanuit() {
 	bool _aanuit = false;
 	if (dccport)_aanuit = true;
 	if (!dcconoff)_aanuit = false;
-
-	Serial.println(_aanuit);
-
+	//Serial.println(_aanuit);
 	return _aanuit;
 }
 
+void DisplayKort(byte _actie) {
+	//toont even kort een door timer of dcc aangepaste stand van een output/actie
+	DisplayClear();
+	waitnext = 2; //displayshow
+	waittime = 100;	 //timer zet het display weer terug
+	switch (_actie) {
+	case 1: //stepper
+		digit[1] = Cijfer(5);
+		digit[2] = Cijfer(stepstop);
+		dots;
+		break;
+	case 2: //servo 1
+		digit[1] = Cijfer(1);
+		digit[2] = Cijfer(servostopdisplay[0]);
+		dots;
+		break;
+	case 3:
+		digit[1] = Cijfer(2);
+		digit[2] = Cijfer(servostopdisplay[1]);
+		dots;
+		break;
+	default:
+		if (_actie > 9) {
+			digit[0] = Letter('t');
+			digit[1] = Cijfer(_actie - 10);
+			if (Timer & (1<<(_actie - 11))) {
+				digit[3] = Cijfer(1);
+			}
+			else {
+				digit[3] = Cijfer(0);
+			}
+			dots;
+		}
+		break;
+	}
 
+}
 //display
 void Display_exe() {
 	displaycount++;
@@ -829,8 +901,8 @@ void DisplayNummer(int _nummer, byte _show) {
 	}
 }
 void DisplayShow(byte _caller) {
-	//caller is voor debug, om te weten wie de functie called, kan weg als alles goed werkt
-	//Serial.print("displayshow   "); Serial.println(_caller);
+	//caller is voor debug, om te weten wie de functie called, kan weg als alles goed werkt(laat maar staan erg handig)
+	Serial.print("displayshow   "); Serial.println(_caller);
 	switch (actie) { //functie van de actieknop
 	case 0: //voor algemene programmeer stappen(dcc adres)
 		DisplayCom();
@@ -1662,6 +1734,7 @@ void Step_exe() {
 				if (stepspeed < minspeed) stepspeed = stepspeed + accelspeed;  //geeft vertraging
 			}
 			steptimer = micros();
+
 			Step_steps();
 		}
 	}
@@ -1809,13 +1882,12 @@ void Step_steps() {
 	}
 	standstep++;
 
-	//hier moet een noodstop komen 
-	if (standstep > stepper[1] + stepper[0] + 100) {
-		NoodStop();
-	}
+	////hier moet een noodstop komen 
+	//if (standstep > stepper[1] + stepper[0] + 100) {
+	//	NoodStop();
+	//}
 
 	if (stepmovefase == 12) { //opweg naar doel.
-
 		if (standstep == standdoel) {
 			stepmovefase = 20;
 			Step_move();
@@ -1828,24 +1900,25 @@ void Stepoff() {
 }
 void StepperActie() {
 	if (stepperisbezet)return;
-	//zet de stepper bezet
-	Output_exe(stepbezetoutput, 0, true); //bezet stellen, 0=caller stepper, stepbezetoutpu=welke output
-	//DisplayMotor();
-	//stepperisbezet = true;
-
-	//timer met voorgaande actie instarten
-	if (stepoutputtimer[0] > 0) {
-		TimerSwitch(0, stepoutputtimer[0] - 1);  //timer 1=0;
-	}
-
 	stepstop++;
 	if (stepstop > stepaantalstops)stepstop = 1;
-	standdoel = stepper[stepstop - 1];
-	stepmovefase = 10;
-
-	//hier is een timer nodig
-	stepwaittime = 100; //pauze van 100x20ms
+	StepStart();
 	DisplayShow(6);
+}
+void StepStart() {
+	if (stepoutputtimer[0] > 0) {  //timer met voorgaande actie instarten
+		TimerSwitch(0, stepoutputtimer[0] - 1);  //timer 1=0;
+	}
+	Output_exe(stepbezetoutput, 0, true); //bezet stellen, 0=caller stepper, stepbezetoutpu=welke output
+	standdoel = stepper[stepstop - 1];  //stand in stappen voor de motor in stellen
+	stepmovefase = 10; //begin draaiproces
+	stepwaittime = 100; //timer voor wachttijd waarin requested positie nog kan worden gewisseld
+}
+void StepDcc(byte _stop) {
+	if (_stop > stepaantalstops || stepperisbezet) return;
+	stepstop = _stop;
+	StepStart();
+	DisplayKort(1);
 }
 void Step_sensor(bool onoff) {
 
@@ -1896,8 +1969,6 @@ void Step_move() {
 		if (stepoutputtimer[1] > 0) {
 			TimerSwitch(0, stepoutputtimer[1] - 1); //stepoutputtimer loopt van 1~8 timers van 0~7
 		}
-
-
 		DisplayShow(7);
 		break;
 
@@ -2126,37 +2197,44 @@ void Servo_exe() {
 		}
 	}
 	//timer instellen starten
+	stepdrivelaatst = stepdrive;
+	stepdrive = false; //stepper onderbreken
 	OCR1A = servocurrent[servo];
 	PORTB |= (1 << (4 + servo));
 	TCCR1B = 10; //start de timer1
 }
 
 void ServoActie(byte _servo) {
-
 	servostopdisplay[_servo]++;
 	if (servostopdisplay[_servo] > servoaantalstops[_servo])servostopdisplay[_servo] = 1;
-
+	ServoStart(_servo);
+	DisplayShow(14);
+}
+void ServoStart(byte _servo) {
 
 	Output_exe(servobezetoutput[_servo], (_servo + 1), true); //1=caller1, servo1 2=caller 2 servo 2 (_servo+1)
-
 	if (servotimeroutput[_servo][0] > 0) { //is er een starttimer ingesteld 
 		TimerSwitch(0, servotimeroutput[_servo][0] - 1);  //timer 1=0; //schakel de timer in 
 	}
-	servowaittime[_servo] = 50; //
+	servowaittime[_servo] = 20; //
+}
+void ServoDcc(byte _servo, byte _stand) {
+	servostopdisplay[_servo] = _stand;
+	ServoStart(_servo);
 
-	DisplayShow(14);
+	DisplayKort(2 + _servo); //2 of 3 dus
 }
 void Servo1_move() {
 	servostop[0] = servostopdisplay[0]; //servostopdisplay ingesteld in servoactie.
 	servotarget[0] = servo1pos[servostop[0] - 1];  //veranderd target en start de servo
 	servostopcount[0] = 0;
-	DisplayShow(32);
+	//DisplayShow(32);
 }
 void Servo2_move() {
 	servostop[1] = servostopdisplay[1];
 	servotarget[1] = servo2pos[servostop[1] - 1];
 	servostopcount[1] = 0;
-	DisplayShow(33);
+	//DisplayShow(33);
 }
 
 
@@ -2635,16 +2713,13 @@ void TimerSwitch(byte _sw, byte _timer) {
 	case 0: //**************switch 1		
 		switch (programfase) {
 		case 0:
-
 			Timer ^= (1 << _timer); //zet timer om aan/uit start timer
 			//Timer |= (1 << _timer); //zet de timer aan
 			//init
-
 			if (!(Timer & (1 << _timer))) {
 				TimerStop(_timer, true);
 				return;
 			}
-
 			timeronoff[_timer] = true; //starten in de on time 
 			timercyclecount[_timer] = 0; //reset teller voor het aantal cycli
 			timerfase[_timer] = 0; //instellen op eerste actie in de acties voor deze timer
