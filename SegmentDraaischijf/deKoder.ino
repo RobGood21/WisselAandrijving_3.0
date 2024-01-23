@@ -75,8 +75,6 @@ bool dcconoff; //aan of uit
 
 byte stepaantalstops = 2; //EEprom 15+
 
-
-
 unsigned long servopulscounter;
 
 unsigned int servorq[2]; // positie waar servo bij b=volgende puls naar toe gaat
@@ -108,6 +106,7 @@ byte outputfase[4];
 
 byte sensoroutput; //ingestelde output voor de sensor default is 0, niks
 byte homeoutput; //ingestelde extra output voor home, default =0, home voor de stepper is vast ingesteld, dit komt eraan parallel
+byte sensorfunctie[2];  //0=aan en uit zetten, 1=alleen aanzetten 2=alleen uitzetten  (0=home 1=sensor) 
 
 
 byte Timer = 0; //8 bits 0=timer1, 1=timer2 2=timer3 enz.
@@ -228,7 +227,11 @@ void Eeprom_write() {
 	EEPROM.update(31, servotimeroutput[1][1]);
 	EEPROM.update(32, dcctype);
 	EEPROM.update(33, actienastart);
+	EEPROM.update(34, sensorfunctie[0]);
+	EEPROM.update(35, sensorfunctie[1]);
+
 	EEPROM.put(50, decoderadres); //zijn 8 bytes
+	
 
 	//servo's
 	for (byte i = 0; i < ServoMaxStops; i++) {
@@ -272,15 +275,16 @@ void Eeprom_read() {
 	servotimeroutput[1][1] = EEPROM.read(31); if (servotimeroutput[1][1] > 50)servotimeroutput[1][1] = 0;
 	dcctype = EEPROM.read(32); if (dcctype == 0xFF)dcctype = 2;
 	actienastart = EEPROM.read(33); if (actienastart == 0xFF)actienastart = 0;
+	sensorfunctie[0] = EEPROM.read(34);
+	sensorfunctie[1] + EEPROM.read(35);
 
 	for (byte i = 0; i < 2; i++) {
 		if (servoaantalstops[i] > ServoMaxStops)servoaantalstops[i] = 2;
 		if (servospeed[i] > ServoMaxSpeed)servospeed[i] = 8; //servo default
 		if (servobezetoutput[i] > AantalOutputOpties)servobezetoutput[i] = 0;
-
 		servocurrent[i] = ServoMinPositie + ((ServoMaxPositie - ServoMinPositie) / 2);
-
 		if (stepoutputtimer[i] > 10)stepoutputtimer[i] = 0;
+		if (sensorfunctie[i] == 0xFF)sensorfunctie[i] = 0;
 	}
 
 
@@ -747,47 +751,93 @@ void DccType16() {
 		DccType8();
 	}
 	else {
-		if (dccport) { //timer starten
-			TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7
-			//controleren of echt aan gegaan, timers hebben heel veel toggle dingen onderweg, hier timer hard aan zetten.
-			if (!(Timer & (1 << dcckanaal - 9))) {
-				TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7				
-			}
-
-		}
-		else { //timer stoppen
-			TimerStop(dcckanaal - 9, true);
-			
-		}
-DisplayKort(dcckanaal+2);
+		DccTimers(9);
+//		if (dccport) { //timer starten
+//			TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7
+//			//controleren of echt aan gegaan, timers hebben heel veel toggle dingen onderweg, hier timer hard aan zetten.
+//			if (!(Timer & (1 << dcckanaal - 9))) {
+//				TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7				
+//			}
+//
+//		}
+//		else { //timer stoppen
+//			TimerStop(dcckanaal - 9, true);
+//			
+//		}
+//DisplayKort(dcckanaal+2); //dus waitnext optie 2~10
 	}
+}
+void DccTimers(byte _offset) {
+	if (dccport) { //timer starten
+		TimerSwitch(0, dcckanaal - _offset); //timers lopen van 0~7
+		//controleren of echt aan gegaan, timers hebben heel veel toggle dingen onderweg, hier timer hard aan zetten.
+		if (!(Timer & (1 << dcckanaal - _offset))) {
+			TimerSwitch(0, dcckanaal - _offset); //timers lopen van 0~7				
+		}
+
+	}
+	else { //timer stoppen
+		TimerStop(dcckanaal - _offset, true);
+
+	}
+	DisplayKort((dcckanaal-_offset) + 10); //dus waitnext optie 10~17
 }
 void DccType32() {
 	byte _stand = 0;
-	if (dcckanaal < 5) { //stepper
-		_stand = ((dcckanaal - 1) * 2) + 1;
+	if (dcckanaal < 5) {
+		DccType4();
+	}
+	else if (dcckanaal < 9) { //stepper
+		_stand = ((dcckanaal - 5) * 2) + 1;
 		if (dccport)_stand++; //1~8
 		//Serial.println(_stand);
 		StepDcc(_stand);
 	}
-	else if (dcckanaal < 9) { //servo1
+	else if (dcckanaal < 13) { //servo1
 		//doe iets met s1
-		_stand = ((dcckanaal - 5) * 2) + 1;
+		_stand = ((dcckanaal - 9) * 2) + 1;
 		if (dccport)_stand++;
 		ServoDcc(0, _stand);
 		//Serial.println(_stand);
 	}
-	else if (dcckanaal < 13) {
-		_stand = ((dcckanaal - 9) * 2) + 1;
+	else if (dcckanaal < 17) {
+		_stand = ((dcckanaal - 13) * 2) + 1;
 		if (dccport)_stand++;
 		ServoDcc(1, _stand);
 		//Serial.println(_stand);
 
 	}
-	else {
-		Serial.println("iets anders");
+	else {		
 		switch (dcckanaal) {
-
+		case 17:
+			Off1;if (aanuit())On1;
+			break;
+		case 18:
+			Off2; if (aanuit())On2;
+			break;
+		case 19:
+			Off3; if (aanuit())On3;
+			break;
+		case 20:
+			Off4; if (aanuit())On4;
+			break;		
+		case 21:
+			OffBezet; if (aanuit())OnBezet;
+			break;
+		case 22:
+			OffAlarm; if (aanuit())OnAlarm;
+			break;
+		case 23: //home sensor
+			SensorActie(0, aanuit());
+			break;
+		case 24: //sensor
+			SensorActie(1,aanuit() );
+			break;
+		default:
+			if (dcckanaal > 32)return;
+			DccTimers(25);
+			//timers
+			break;
 		}
 	}
 }
@@ -801,6 +851,9 @@ bool aanuit() {
 }
 
 void DisplayKort(byte _actie) {
+
+	//Serial.println(_actie);
+
 	//toont even kort een door timer of dcc aangepaste stand van een output/actie
 	DisplayClear();
 	waitnext = 2; //displayshow
@@ -824,8 +877,8 @@ void DisplayKort(byte _actie) {
 	default:
 		if (_actie > 9) {
 			digit[0] = Letter('t');
-			digit[1] = Cijfer(_actie - 10);
-			if (Timer & (1<<(_actie - 11))) {
+			digit[1] = Cijfer(_actie - 9);
+			if (Timer & (1<<(_actie - 10))) {
 				digit[3] = Cijfer(1);
 			}
 			else {
@@ -902,7 +955,7 @@ void DisplayNummer(int _nummer, byte _show) {
 }
 void DisplayShow(byte _caller) {
 	//caller is voor debug, om te weten wie de functie called, kan weg als alles goed werkt(laat maar staan erg handig)
-	Serial.print("displayshow   "); Serial.println(_caller);
+	//Serial.print("displayshow   "); Serial.println(_caller);
 	switch (actie) { //functie van de actieknop
 	case 0: //voor algemene programmeer stappen(dcc adres)
 		DisplayCom();
@@ -1042,6 +1095,9 @@ byte Letter(char _letter) {
 	case 'p':
 		_result = B10001100;
 		break;
+	case 'u':
+		_result = B11100011;
+		break;
 	case 'U':
 		_result = B11000001;
 		break;
@@ -1119,6 +1175,18 @@ void DisplayAlias(byte _alias, bool _actie) { //vervang digit 2 e 3 voor een ali
 	case 11:
 		digit[2] = Cijfer(5);
 		digit[3] = Letter('E');
+		break;
+	case 20: //sensor functie 0 (aan en uit)
+		digit[2] = Letter('A');
+		digit[3] = Letter('U');
+		break;
+	case 21: //sensorfunctie 1 (aan)
+		digit[2] = Letter('A');
+		digit[3] = Cijfer(10);
+		break;
+	case 22: //sensorfunctie 2 (uit)
+		digit[2] = Cijfer(10);
+		digit[3] = Letter('U');
 		break;
 	case 100: //dcc type 0
 		digit[2] = Cijfer(10);
@@ -1370,6 +1438,9 @@ void SWon(byte _sw) {
 			case 1:
 				Prg_Homeoutput(false);
 				break;
+			case 2:
+				Prg_sensorfunctie(0, false);
+				break;
 			}
 			break;
 		case 11: //actie sensor
@@ -1380,6 +1451,10 @@ void SWon(byte _sw) {
 			case 1:
 				Prg_sensoroutput(false);
 				break;
+			case 2: //sensorfunctie
+			Prg_sensorfunctie(1, false);
+				break;
+
 			}
 			break;
 
@@ -1529,6 +1604,9 @@ void SWon(byte _sw) {
 			case 1:
 				Prg_Homeoutput(true);
 				break;
+			case 2:
+				Prg_sensorfunctie(0, true);
+				break;
 			}
 			break;
 		case 11: //output sensor
@@ -1539,6 +1617,8 @@ void SWon(byte _sw) {
 			case 1:
 				Prg_sensoroutput(true);
 				break;
+			case 2:
+				Prg_sensorfunctie(1,true);
 			}
 
 			break;
@@ -1552,14 +1632,18 @@ void SWon(byte _sw) {
 	case 3: //switch 4 program switch
 		Prg_up();
 		break;
-		//**************************************
-	case 4: //Sensor aan
-		SensorActie(1, false);
+		//**************************************SENSOREN******************
+
+
+	case 4: //Sensor uit  (uit want hoogactief)
+		if(sensorfunctie[1] !=1)  SensorActie(1, false); //1=aan dan wordt actie niet uitgezet alleen aangezet dus actief worden van de sensor
 		break;
 		//***********************************
-	case 5: //hall sensor home, aan 
+	case 5: //hall sensor home, uit
 		Step_sensor(false); //deze actie is vast ingesteld, home switch voor de stepper
-		SensorActie(0, false);
+
+		//subfunctie van de home sensor, beide gebruiken kan problemen geven met de stepper(hoeft niet)
+		if(sensorfunctie[0]!=1)	SensorActie(0, false); //als bij sensor
 		break;
 	}
 }
@@ -1567,12 +1651,35 @@ void SWoff(byte _sw) {
 	scrollcount[_sw] = 0; //reset teller voor het scrollen
 	scrollspeed = 0;
 	switch (_sw) {
-	case 4: //sensor knop ingedrukt
-		SensorActie(1, true);
+	case 0:  //knop 1 losgelaten
+		switch (actie) {
+		case 10: //Xtra home sensor
+			SensorActie(0, false);
+			break;
+		case 11: //sensor
+			SensorActie(1, false);
+			break;
+		}
 		break;
+	case 4: //sensor knop ingedrukt
+		if (sensorfunctie[1] == 2) { //2=alleen uit sensor actief zet actie uit
+			SensorActie(1, false);
+		}
+		else {
+		SensorActie(1, true);
+		}
+		break;
+
 	case 5: //hall sensor home
-		Step_sensor(true);
+		Step_sensor(true); //home switch stepper
+		//extra sub functie van de sensor
+
+		if (sensorfunctie[0] == 2) {
+			SensorActie(0, false);
+		}
+		else {
 		SensorActie(0, true);
+		}
 		break;
 	}
 }
@@ -2843,6 +2950,11 @@ void DisplayHome() {
 		DisplayAlias(homeoutput, false);
 		dots;
 		break;
+	case 2: //instellen sub functie van de home aan/uit of alleen aan of alleen uit
+		digit[0] = Letter('F');
+		digit[1] = Letter('u');
+		DisplayAlias(20 + sensorfunctie[0], true);
+		break;
 	}
 }
 void Prg_Homeoutput(bool _plusmin) {
@@ -2875,6 +2987,13 @@ void DisplaySensor() {
 		DisplayAlias(sensoroutput, false); //geen actie maar een output, dus actie 0 wordt --
 		dots;
 		break;
+	case 2: //instellen functie aan, uit of aanuit
+		DisplayClear();
+		digit[0] = Letter('F');
+		digit[1] = Letter('u');
+		dots;
+		DisplayAlias(20 + sensorfunctie[1], true);
+		break;
 	}
 }
 void Prg_sensoroutput(bool _plusmin) {
@@ -2888,9 +3007,18 @@ void Prg_sensoroutput(bool _plusmin) {
 	}
 	DisplayShow(25);
 }
+void Prg_sensorfunctie(byte _sensor, bool _plusmin) {
+	if (_plusmin) {
+		if (sensorfunctie[_sensor] < 2)sensorfunctie[_sensor]++;
+	}
+	else {
+		if (sensorfunctie[_sensor] > 0)sensorfunctie[_sensor]--;
+	}
+	DisplayShow(50);
+}
 void ProgramSensors(byte _sensor) { //home en sensor 0=home 1=sensor
 	scrollmask = 0;
-	if (programfase > 1)programfase = 0;
+	if (programfase > 2)programfase = 0;
 	switch (programfase) {
 	case 0:
 		Prg_end(); //einde programmeer mode en opslaan data
@@ -2898,8 +3026,9 @@ void ProgramSensors(byte _sensor) { //home en sensor 0=home 1=sensor
 	}
 }
 void SensorActie(byte _sensor, bool _onoff) {
+	Serial.println(_onoff);
 	//actie aangeroepen door de knop1 als actie op sensor staat. En door de aansluiting Sensor hoog actief
-	if (_onoff == false)return; //ff niks doen op uitgaan van de sensor
+	//if (_onoff == false)return; //ff niks doen op uitgaan van de sensor
 	byte _output;
 	if (_sensor == 0) { //home
 		_output = homeoutput;
@@ -2910,31 +3039,37 @@ void SensorActie(byte _sensor, bool _onoff) {
 
 	switch (_output) {
 	case 1: //stepper
-		if (_sensor == 1) StepperActie();  //alleen aansturing van sensor mogelijk, niet met Home
+		if (_sensor == 1 && _onoff) StepperActie();  //alleen aansturing van sensor mogelijk, niet met Home
 		break;
 	case 2: //servo1
-		ServoActie(0);
+		if(_onoff)ServoActie(0);
 		break;
 	case 3: //servo2
-		ServoActie(1);
+		if(_onoff)ServoActie(1);
 		break;
 	case 4: //out1
-		Toggle1;
+		Off1;
+		if (_onoff)On1;
 		break;
 	case 5:
-		Toggle2;
+		Off2;
+		if(_onoff)On2;
 		break;
 	case 6:
-		Toggle3;
+		Off3;
+		if(_onoff)On3;
 		break;
 	case 7:
-		Toggle4;
+		Off4;
+		if(_onoff)On4;
 		break;
 	case 8:
-		ToggleBezet;
+		OffBezet;
+		if(_onoff)OnBezet;
 		break;
 	case 9:
-		ToggleAlarm;
+		OffAlarm;
+		if(_onoff)OnAlarm;
 		break;
 	default:
 		//Timers, kunnen alleen worden aangezet door een sensor, uitzetten kan door het aantal cyclus niet op continue (0) te zetten, 
