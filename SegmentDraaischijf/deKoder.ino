@@ -26,13 +26,17 @@ NmraDcc  Dcc;
 #define clear23 digit[2] = Cijfer(10); digit[3] = Cijfer(10); //laatste twee digits uit
 #define line23 digit[2]=Letter('-');digit[3]=Letter('-');
 
-#define On1 shiftbyte[1] |= (1 << 4); 
+#define On1 outputonoff |=(1<<4);
+//#define On1 PWM_output(4,true); //1==4
+//#define On1 shiftbyte[1] |= (1 << 4); 
 #define On2 shiftbyte[1] |= (1 << 5); 
 #define On3 shiftbyte[1] |= (1 << 6); 
 #define On4 shiftbyte[1] |= (1 << 7);
 #define OnBezet PORTD |=(1<<7);
 #define OnAlarm PORTD |=(1<<3);
-#define Off1 shiftbyte[1] &=~(1 << 4); 
+#define Off1 outputonoff &= ~(1 << 4);
+//#define Off1 PWM_output(4,false);
+//#define Off1 shiftbyte[1] &=~(1 << 4); 
 #define Off2 shiftbyte[1] &=~(1 << 5);
 #define Off3 shiftbyte[1] &=~(1 << 6);
 #define Off4 shiftbyte[1] &=~(1 << 7); 
@@ -59,6 +63,12 @@ const byte TimerAantalFases = 6; //maximaal aantal verschillende outputs lus van
 const byte servocyclespeed = 5; //servo pult komt om de 10 ms (2x servo x 5ms)
 
 //variabelen
+//outputs
+byte outputonoff; //bit0=output1 bit 4=outbezet bit 5 is out alarm
+byte pwmcount[8]; //duty cycle counter, de off tijd van het pwm signaal
+byte pwmduty[8]; //duty cycle van de ppwm voor de output EEPROM 80
+
+
 unsigned int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 EEPROM 50
 unsigned int dccadres = 1; //
 byte dcctype; //hoofdinstelling van de DCC ontvangst 0=niet,4 8 16 32
@@ -110,9 +120,13 @@ byte sensorfunctie[2];  //0=aan en uit zetten, 1=alleen aanzetten 2=alleen uitze
 
 
 byte Timer = 0; //8 bits 0=timer1, 1=timer2 2=timer3 enz.
+byte timerscale[8]; //0=10ms(default)  1=100ms  2=1 seconde EEPROM 70~77
+byte timerscalecounter[8]; //teller voor het aftellen van de prescaler 
+byte timerprescaler[8]; //waarde van de prescaler 0,10 of 100
 unsigned int timerontijd[8];
 unsigned int timerofftijd[8];
-unsigned int timercount[8]; //teller voor de timers ??
+unsigned int timercount[8]; //teller voor de timers 
+
 byte timeroutput[8][6]; //2 timers, iedere timer 6 outputs (EEPROM)
 byte timerkeuzeoutput[8]; //welke output ben je aan het instellen 
 byte timercycles[8]; //hoe vaak de timer cycle wordt doorlopen 0= continue (default), 200-max (EEPROM)
@@ -120,7 +134,8 @@ byte timercyclecount[8]; //teller voor het aantal doorlopen cycles
 bool timeronoff[8]; //timed de timer de ontime of de  offtime, true = offtime
 byte timerfase[8]; //met welke fase, actie is de timer bezig
 byte timeraantaloutputs[8];
-byte timerstoppen = B11111111; //als false da wordt timer alleen gewisseld nooit gestopt
+byte timerstoppen = B11111111; //als false dan wordt timer alleen gewisseld nooit gestopt
+
 
 byte actienastart; //welke actie er wordt ingestart na powerup, 0 (geen) is default.
 
@@ -231,7 +246,7 @@ void Eeprom_write() {
 	EEPROM.update(35, sensorfunctie[1]);
 
 	EEPROM.put(50, decoderadres); //zijn 8 bytes
-	
+
 
 	//servo's
 	for (byte i = 0; i < ServoMaxStops; i++) {
@@ -248,6 +263,8 @@ void Eeprom_write() {
 		for (byte op = 0; op < 6; op++) {
 			EEPROM.update(700 + (i * 10) + op, timeroutput[i][op]);
 		}
+		EEPROM.update(70 + i, timerscale[i]);  //10ms, 100ms of 1 seconde
+		EEPROM.update(80 + i, pwmduty[i]);  //dutyo cycle pwm outputs 1~100% (100==00)
 	}
 
 	Eeprom_read(); //data terug lezen.
@@ -309,6 +326,13 @@ void Eeprom_read() {
 				if (i == 0 && op == 0)timeroutput[0][0] = 4; //output1
 				if (i == 0 && op == 1)timeroutput[0][1] = 5;//output2
 			}
+			//timer scales
+			timerscale[i] = EEPROM.read(70 + i);
+			if (timerscale[i] > 2)timerscale[i] = 0; //default 10ms per click
+			//outputs duty cycle
+			
+			pwmduty[i] = EEPROM.read(80 + i);
+			if (pwmduty[i] > 100)pwmduty[i] = 100; //dit moet nog worden omgekeerd, maar is logischer bij instellen.
 		}
 
 	}
@@ -441,6 +465,11 @@ void loop()
 	Dcc.process();
 	Step_exe();
 	Display_exe();
+
+
+	//PWM_exe(); //DIT is experimenteel 24jan, dit is te heftig verplaatst naar display exe 
+
+
 
 	if (millis() - ServoTimer > servocyclespeed) {
 		Servo_exe();
@@ -752,19 +781,19 @@ void DccType16() {
 	}
 	else {
 		DccTimers(9);
-//		if (dccport) { //timer starten
-//			TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7
-//			//controleren of echt aan gegaan, timers hebben heel veel toggle dingen onderweg, hier timer hard aan zetten.
-//			if (!(Timer & (1 << dcckanaal - 9))) {
-//				TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7				
-//			}
-//
-//		}
-//		else { //timer stoppen
-//			TimerStop(dcckanaal - 9, true);
-//			
-//		}
-//DisplayKort(dcckanaal+2); //dus waitnext optie 2~10
+		//		if (dccport) { //timer starten
+		//			TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7
+		//			//controleren of echt aan gegaan, timers hebben heel veel toggle dingen onderweg, hier timer hard aan zetten.
+		//			if (!(Timer & (1 << dcckanaal - 9))) {
+		//				TimerSwitch(0, dcckanaal - 9); //timers lopen van 0~7				
+		//			}
+		//
+		//		}
+		//		else { //timer stoppen
+		//			TimerStop(dcckanaal - 9, true);
+		//			
+		//		}
+		//DisplayKort(dcckanaal+2); //dus waitnext optie 2~10
 	}
 }
 void DccTimers(byte _offset) {
@@ -780,7 +809,7 @@ void DccTimers(byte _offset) {
 		TimerStop(dcckanaal - _offset, true);
 
 	}
-	DisplayKort((dcckanaal-_offset) + 10); //dus waitnext optie 10~17
+	DisplayKort((dcckanaal - _offset) + 10); //dus waitnext optie 10~17
 }
 void DccType32() {
 	byte _stand = 0;
@@ -807,10 +836,10 @@ void DccType32() {
 		//Serial.println(_stand);
 
 	}
-	else {		
+	else {
 		switch (dcckanaal) {
 		case 17:
-			Off1;if (aanuit())On1;
+			Off1; if (aanuit())On1;
 			break;
 		case 18:
 			Off2; if (aanuit())On2;
@@ -820,7 +849,7 @@ void DccType32() {
 			break;
 		case 20:
 			Off4; if (aanuit())On4;
-			break;		
+			break;
 		case 21:
 			OffBezet; if (aanuit())OnBezet;
 			break;
@@ -831,7 +860,7 @@ void DccType32() {
 			SensorActie(0, aanuit());
 			break;
 		case 24: //sensor
-			SensorActie(1,aanuit() );
+			SensorActie(1, aanuit());
 			break;
 		default:
 			if (dcckanaal > 32)return;
@@ -878,7 +907,7 @@ void DisplayKort(byte _actie) {
 		if (_actie > 9) {
 			digit[0] = Letter('t');
 			digit[1] = Cijfer(_actie - 9);
-			if (Timer & (1<<(_actie - 10))) {
+			if (Timer & (1 << (_actie - 10))) {
 				digit[3] = Cijfer(1);
 			}
 			else {
@@ -893,14 +922,20 @@ void DisplayKort(byte _actie) {
 //display
 void Display_exe() {
 	displaycount++;
-	if (displaycount > 500) { //clockcycles
+	if (displaycount > 10) { //clockcycles was 500
 		displaycount = 0;
 		digitcount++;
 		if (digitcount > 3)digitcount = 0;
 		shiftbyte[1] &= ~(15 << 0); //clear bits 0~3
 		shiftbyte[1] |= (1 << digitcount);
 		shiftbyte[0] = digit[digitcount];
+
+	PWM_exe(); //experimenteel 24jan
 		Shift();
+
+		//hier stond de shift() voor 24jan
+
+
 	}
 }
 void DisplayNummer(int _nummer, byte _show) {
@@ -1188,6 +1223,21 @@ void DisplayAlias(byte _alias, bool _actie) { //vervang digit 2 e 3 voor een ali
 		digit[2] = Cijfer(10);
 		digit[3] = Letter('U');
 		break;
+	case 30: //timerscale 001
+		digit[1] = Cijfer(0);
+		digit[2] = Cijfer(0);
+		digit[3] = Cijfer(1);
+		break;
+	case 31: //timerscale 01
+		digit[1] = Cijfer(10);
+		digit[2] = Cijfer(0);
+		digit[3] = Cijfer(1);
+		break;
+	case 32: //timerscale 1
+		digit[1] = Cijfer(10);
+		digit[2] = Cijfer(10);
+		digit[3] = Cijfer(1);
+		break;
 	case 100: //dcc type 0
 		digit[2] = Cijfer(10);
 		digit[3] = Letter('-');
@@ -1452,7 +1502,7 @@ void SWon(byte _sw) {
 				Prg_sensoroutput(false);
 				break;
 			case 2: //sensorfunctie
-			Prg_sensorfunctie(1, false);
+				Prg_sensorfunctie(1, false);
 				break;
 
 			}
@@ -1618,7 +1668,7 @@ void SWon(byte _sw) {
 				Prg_sensoroutput(true);
 				break;
 			case 2:
-				Prg_sensorfunctie(1,true);
+				Prg_sensorfunctie(1, true);
 			}
 
 			break;
@@ -1636,14 +1686,14 @@ void SWon(byte _sw) {
 
 
 	case 4: //Sensor uit  (uit want hoogactief)
-		if(sensorfunctie[1] !=1)  SensorActie(1, false); //1=aan dan wordt actie niet uitgezet alleen aangezet dus actief worden van de sensor
+		if (sensorfunctie[1] != 1)  SensorActie(1, false); //1=aan dan wordt actie niet uitgezet alleen aangezet dus actief worden van de sensor
 		break;
 		//***********************************
 	case 5: //hall sensor home, uit
 		Step_sensor(false); //deze actie is vast ingesteld, home switch voor de stepper
 
 		//subfunctie van de home sensor, beide gebruiken kan problemen geven met de stepper(hoeft niet)
-		if(sensorfunctie[0]!=1)	SensorActie(0, false); //als bij sensor
+		if (sensorfunctie[0] != 1)	SensorActie(0, false); //als bij sensor
 		break;
 	}
 }
@@ -1666,7 +1716,7 @@ void SWoff(byte _sw) {
 			SensorActie(1, false);
 		}
 		else {
-		SensorActie(1, true);
+			SensorActie(1, true);
 		}
 		break;
 
@@ -1678,7 +1728,7 @@ void SWoff(byte _sw) {
 			SensorActie(0, false);
 		}
 		else {
-		SensorActie(0, true);
+			SensorActie(0, true);
 		}
 		break;
 	}
@@ -2540,7 +2590,8 @@ void OutputSwitch(byte _out, bool _plusmin) {
 void OutputActie(byte _out) {
 	//voorlopig hebben outputs geen functies alleen toggle
 	if (_out < 4) {
-		shiftbyte[1] ^= (1 << (_out + 4));
+		//shiftbyte[1] ^= (1 << (_out + 4));
+		outputonoff ^= (1 << (_out + 4));
 	}
 	else {
 		switch (_out) {
@@ -2630,6 +2681,35 @@ void DisplayOutputkeuze(byte _output) {
 	dots;
 }
 
+
+void PWM_exe() {
+	//byte outputonoff; //bit0=output1 bit 4=outbezet bit 5 is out alarm
+	//byte pwmcount[8]; //duty cycle counter, de off tijd van het pwm signaal
+	//byte pwmduty[8] //instelling van de dutycycle per output (8= teveel, maar voorkomt vergissingen)
+
+
+
+
+	for (byte i = 4; i < 8; i++) { //alle outputs bekijken
+		if (outputonoff & (1 << i)) { // output aan
+
+			if (shiftbyte[1] & (1 << i)) { //output hoog
+				shiftbyte[1] &= ~(1 << i); //output laag zetten 
+			}
+			else { //output staat laag
+				pwmcount[i]++;
+				if (pwmcount[i] > 10) { //% duty cycle
+					pwmcount[i] = 0;
+			shiftbyte[1] |= (1 << i); //zet output weer aan
+				}
+			}
+		}
+		else { //output uit
+			shiftbyte[1] &= ~(1 << i);
+		}
+	}
+}
+
 //Timers
 unsigned long verlopentijd;
 byte count = 0;
@@ -2637,7 +2717,17 @@ void Timer_exe() {
 	//called door ISR van timer 2 iedere 10ms, voorlopig straks tijdschaal instelbaar maken.
 
 	for (byte i = 0; i < 8; i++) {  //8 timers
-		if (Timer & (1 << i)) { //timer aan of uit
+		if (Timer & (1 << i)) { //timer aan of uit, i=dus nu de gekozen timer
+
+			//prescaler
+			timerscalecounter[i]++;
+			if (timerscalecounter[i] > timerprescaler[i]) {
+				timerscalecounter[i] = 0; //reset de teller
+			}
+			else {
+				break; //verlaat deze cycle
+			}
+
 			timercount[i]++;
 			if (timeronoff[i]) { //on tijd aftellen
 
@@ -2709,26 +2799,29 @@ void DisplayTimer(byte _timer) {
 		digit[0] = Letter('t');
 		digit[1] = Cijfer(_timer + 1);
 		break;
-
-	case 1: //on tijd instellen
+	case 1: //timer scaler 
+		digit[0] = Letter('C');
+		DisplayAlias(30 + timerscale[_timer], true);
+		break;
+	case 2: //on tijd instellen
 		DisplayNummer(timerontijd[_timer], 4);
 		break;
-	case 2: //offtijd instellen
+	case 3: //offtijd instellen
 		DisplayNummer(timerofftijd[_timer], 4);
 		break;
-	case 3: //outputs(6) instellen, met knop 1 outputchannel te kiezen
+	case 4: //outputs(6) instellen, met knop 1 outputchannel te kiezen
 		digit[0] = Letter('C');
 		digit[1] = Cijfer(timerkeuzeoutput[_timer] + 1);  //tonen als 1tot6		
 		DisplayAlias(timeroutput[_timer][timerkeuzeoutput[_timer]], false); //in outputkeuze niet de actie c(ommom) kiezen maar een streepje
 		dots;
 		break;
-	case 4: //aantal cycles instellen
+	case 5: //aantal cycles instellen
 		digit[0] = Letter('c');
 		digit[1] = Letter('A');
 		DisplayNummer(timercycles[_timer], 23);
 		dots;
 		break;
-	case 5:  //na activatie door een timer, start/stop of toggle aan/uit (geen stop)
+	case 6:  //na activatie door een timer, start/stop of toggle aan/uit (geen stop)
 		DisplayClear();
 		if (timerstoppen & (1 << _timer)) {
 			//timer starten en stoppen door andere timer
@@ -2802,7 +2895,7 @@ void TimerActie(byte _timer, bool _natijd) { //_stepper false=stepper en servo's
 }
 void TimerSwitch(byte _sw, byte _timer) {
 	//Programfase is al verhoogd in voorgaande Prgup. Prgup wordt gecalled bij druk op knop4 en verwijst naar deze void.
-	if (programfase > 5)programfase = 0;
+	if (programfase > 6)programfase = 0;
 	byte _scrollsteps = 0;
 	switch (scrollspeed) {
 	case 0:
@@ -2831,6 +2924,18 @@ void TimerSwitch(byte _sw, byte _timer) {
 			timercyclecount[_timer] = 0; //reset teller voor het aantal cycli
 			timerfase[_timer] = 0; //instellen op eerste actie in de acties voor deze timer
 			timercount[_timer] = 0; //reset de teller
+			timerscalecounter[_timer] = 0;
+			switch (timerscale[_timer]) {
+			case 0:
+				timerprescaler[_timer] = 0; //count=10ms (default)
+				break;
+			case 1:
+				timerprescaler[_timer] = 10; //count=100ms
+				break;
+			case 2:
+				timerprescaler[_timer] = 100; //1 count = 1 seconde
+				break;
+			}
 
 			//aantal ingestelde outputs bepalen
 			timeraantaloutputs[_timer] = 0;
@@ -2848,7 +2953,7 @@ void TimerSwitch(byte _sw, byte _timer) {
 
 			break;
 
-		case 3: //keuze timeroutput	
+		case 4: //keuze timeroutput	
 			//volgende outputkanaal alleen te kiezen als voorgaande(deze dus) niet nul is maar een output bevat.
 			//if (timeroutput[_timer][timerkeuzeoutput[_timer]] > 0) {
 			timerkeuzeoutput[_timer]++;
@@ -2864,20 +2969,23 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 0: //in bedrijf lagere actie voor de actie knop instellen
 			Actie_exe(false);
 			break;
-		case 1: //dec on time
+		case 1: //instellen scaler voor de timer
+			if (timerscale[_timer] > 0)timerscale[_timer]--;
+			break;
+		case 2: //dec on time
 			if (timerontijd[_timer] > _scrollsteps)timerontijd[_timer] -= _scrollsteps;
 
 			break;
-		case 2: //dec off time
+		case 3: //dec off time
 			if (timerofftijd[_timer] > _scrollsteps)timerofftijd[_timer] -= _scrollsteps;
 			break;
-		case 3: //dec channel output kiezen 
+		case 4: //dec channel output kiezen 
 			if (timeroutput[_timer][timerkeuzeoutput[_timer]] > 0) timeroutput[_timer][timerkeuzeoutput[_timer]]--;
 			break;
-		case 4: //dec aantgal timer cycles 0=default is doorgaan, continue
+		case 5: //dec aantgal timer cycles 0=default is doorgaan, continue
 			if (timercycles[_timer] > 0)timercycles[_timer]--;
 			break;
-		case 5: //startstop of toggle aansturing door een andere timer
+		case 6: //startstop of toggle aansturing door een andere timer
 			timerstoppen |= (1 << _timer);
 			break;
 		}
@@ -2888,19 +2996,22 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 0: //in bedrijf, hogere actie voor de actie knop instellen
 			Actie_exe(true);
 			break;
-		case 1: //inc on time
+		case 1: //instellen timer prescaler
+			if (timerscale[_timer] < 2)timerscale[_timer]++;
+			break;
+		case 2: //inc on time
 			if (timerontijd[_timer] < 10000 - _scrollsteps)timerontijd[_timer] += _scrollsteps;
 			break;
-		case 2: //inc off time
+		case 3: //inc off time
 			if (timerofftijd[_timer] < (10000 - _scrollsteps))timerofftijd[_timer] += _scrollsteps;
 			break;
-		case 3: //inc channel output kiezen (aantalacties-2???)
+		case 4: //inc channel output kiezen (aantalacties-2???)
 			if (timeroutput[_timer][timerkeuzeoutput[_timer]] < AantalActies) timeroutput[_timer][timerkeuzeoutput[_timer]]++;
 			break;
-		case 4: //inc aantalcycles
+		case 5: //inc aantalcycles
 			if (timercycles[_timer] < 99)timercycles[_timer]++;
 			break;
-		case 5:
+		case 6:
 			timerstoppen &= ~(1 << _timer);
 			break;
 		}
@@ -2913,19 +3024,21 @@ void TimerSwitch(byte _sw, byte _timer) {
 		case 0:
 			Prg_end();
 			break;
-		case 1:
-			scrollmask = B0111;
+		case 1: //timer scale instellen
 			break;
 		case 2:
-			scrollmask = B0110;
+			scrollmask = B0111;
 			break;
 		case 3:
-			timerkeuzeoutput[_timer] = 0;
-			break;
-		case 4: //cycles
 			scrollmask = B0110;
 			break;
-		case 5: //start/stop door timer aansturing
+		case 4:
+			timerkeuzeoutput[_timer] = 0;
+			break;
+		case 5: //cycles
+			scrollmask = B0110;
+			break;
+		case 6: //start/stop door timer aansturing
 			break;
 		}
 		break;
@@ -3042,10 +3155,10 @@ void SensorActie(byte _sensor, bool _onoff) {
 		if (_sensor == 1 && _onoff) StepperActie();  //alleen aansturing van sensor mogelijk, niet met Home
 		break;
 	case 2: //servo1
-		if(_onoff)ServoActie(0);
+		if (_onoff)ServoActie(0);
 		break;
 	case 3: //servo2
-		if(_onoff)ServoActie(1);
+		if (_onoff)ServoActie(1);
 		break;
 	case 4: //out1
 		Off1;
@@ -3053,23 +3166,23 @@ void SensorActie(byte _sensor, bool _onoff) {
 		break;
 	case 5:
 		Off2;
-		if(_onoff)On2;
+		if (_onoff)On2;
 		break;
 	case 6:
 		Off3;
-		if(_onoff)On3;
+		if (_onoff)On3;
 		break;
 	case 7:
 		Off4;
-		if(_onoff)On4;
+		if (_onoff)On4;
 		break;
 	case 8:
 		OffBezet;
-		if(_onoff)OnBezet;
+		if (_onoff)OnBezet;
 		break;
 	case 9:
 		OffAlarm;
-		if(_onoff)OnAlarm;
+		if (_onoff)OnAlarm;
 		break;
 	default:
 		//Timers, kunnen alleen worden aangezet door een sensor, uitzetten kan door het aantal cyclus niet op continue (0) te zetten, 
