@@ -26,26 +26,26 @@ NmraDcc  Dcc;
 #define clear23 digit[2] = Cijfer(10); digit[3] = Cijfer(10); //laatste twee digits uit
 #define line23 digit[2]=Letter('-');digit[3]=Letter('-');
 
-#define On1 outputonoff |=(1<<4);
+#define On1 outputonoff |=(1 << 0); //betreft output1
 //#define On1 PWM_output(4,true); //1==4
 //#define On1 shiftbyte[1] |= (1 << 4); 
-#define On2 shiftbyte[1] |= (1 << 5); 
-#define On3 shiftbyte[1] |= (1 << 6); 
-#define On4 shiftbyte[1] |= (1 << 7);
+#define On2 outputonoff |= (1 << 1); 
+#define On3 outputonoff |= (1 << 2); 
+#define On4 outputonoff |= (1 << 3);
 #define OnBezet PORTD |=(1<<7);
 #define OnAlarm PORTD |=(1<<3);
-#define Off1 outputonoff &= ~(1 << 4);
+#define Off1 outputonoff &= ~(1 << 0);
 //#define Off1 PWM_output(4,false);
 //#define Off1 shiftbyte[1] &=~(1 << 4); 
-#define Off2 shiftbyte[1] &=~(1 << 5);
-#define Off3 shiftbyte[1] &=~(1 << 6);
-#define Off4 shiftbyte[1] &=~(1 << 7); 
+#define Off2 outputonoff &=~(1 << 1);
+#define Off3 outputonoff &=~(1 << 2);
+#define Off4 outputonoff &=~(1 << 3); 
 #define OffBezet PORTD &=~(1<<7);
 #define OffAlarm PORTD &=~(1<<3);
-#define Toggle1 shiftbyte[1] ^=(1 << 4); 
-#define Toggle2 shiftbyte[1] ^=(1 << 5); 
-#define Toggle3 shiftbyte[1] ^=(1 << 6); 
-#define Toggle4 shiftbyte[1] ^=(1 << 7); 
+//#define Toggle1 shiftbyte[1] ^=(1 << 4); 
+//#define Toggle2 shiftbyte[1] ^=(1 << 5); 
+//#define Toggle3 shiftbyte[1] ^=(1 << 6); 
+//#define Toggle4 shiftbyte[1] ^=(1 << 7); 
 #define ToggleBezet PIND |=(1<<7);
 #define ToggleAlarm PIND |=(1<<3);
 
@@ -64,10 +64,13 @@ const byte servocyclespeed = 5; //servo pult komt om de 10 ms (2x servo x 5ms)
 
 //variabelen
 //outputs
+byte pwmoncount[8];
 byte outputonoff; //bit0=output1 bit 4=outbezet bit 5 is out alarm
 byte pwmcount[8]; //duty cycle counter, de off tijd van het pwm signaal
-byte pwmduty[8]; //duty cycle van de ppwm voor de output EEPROM 80
-
+byte pwmduty[8]; //duty cycle van de ppwm voor de output EEPROM 80 instelling
+byte pwmdutycycle[8]; //dutycycle van een output om dit moment
+unsigned int outputpwmspeed[8]; //snelheid van dec en inc van de dutycycle voor outputs  EEPROM 900 instelling
+unsigned int outputpwmspeedcount[8]; //teller telt de periode tussen twee dec of inc van de duty cycle
 
 unsigned int decoderadres = 1; //dccadres = (decoder adres-1) * 4 plus het channel(1~4) binair 0~3 dus deze ook plus 1 EEPROM 50
 unsigned int dccadres = 1; //
@@ -80,7 +83,7 @@ byte dcclaatstecommand[32]; //laatst ontvangen command op dit adres
 
 //delen van het ontvangen dcc command als variabelen om veel doorgeven van deze variabelen tegen te gaan
 byte dcckanaal;
-bool dccport; //rechtoddor of afslaand
+bool dccport; //rechtdoor of afslaand
 bool dcconoff; //aan of uit
 
 byte stepaantalstops = 2; //EEprom 15+
@@ -265,6 +268,7 @@ void Eeprom_write() {
 		}
 		EEPROM.update(70 + i, timerscale[i]);  //10ms, 100ms of 1 seconde
 		EEPROM.update(80 + i, pwmduty[i]);  //dutyo cycle pwm outputs 1~100% (100==00)
+		EEPROM.put(900 + (i * 10), outputpwmspeed[i]); //snelheid van verandering van de pwm dutycycle
 	}
 
 	Eeprom_read(); //data terug lezen.
@@ -330,9 +334,13 @@ void Eeprom_read() {
 			timerscale[i] = EEPROM.read(70 + i);
 			if (timerscale[i] > 2)timerscale[i] = 0; //default 10ms per click
 			//outputs duty cycle
-			
+
 			pwmduty[i] = EEPROM.read(80 + i);
 			if (pwmduty[i] > 100)pwmduty[i] = 100; //dit moet nog worden omgekeerd, maar is logischer bij instellen.
+			//pwmspeed[i] = EEPROM.read(90 + i);
+
+			EEPROM.get(900 + (i * 10), outputpwmspeed[i]);
+			if (outputpwmspeed[i] > 9999)outputpwmspeed[i] = 0; //aantal stappen van 10ms
 		}
 
 	}
@@ -451,6 +459,10 @@ void setup() {
 }
 void Init() {
 	Eeprom_read();
+	//outputs
+	for (byte i = 0; i < 8; i++) {
+		pwmdutycycle[i] = 100;
+	}
 	start = true;
 	servostop[0] = 0; servostop[1] = 0;
 	programfase = 0;
@@ -465,11 +477,6 @@ void loop()
 	Dcc.process();
 	Step_exe();
 	Display_exe();
-
-
-	//PWM_exe(); //DIT is experimenteel 24jan, dit is te heftig verplaatst naar display exe 
-
-
 
 	if (millis() - ServoTimer > servocyclespeed) {
 		Servo_exe();
@@ -502,7 +509,8 @@ ISR(TIMER1_COMPA_vect) {
 }
 
 ISR(TIMER2_COMPA_vect) {
-	if (Timer > 0) Timer_exe(); //called om de 10ms
+	if (Timer > 0)	Timer_exe(); //called om de 10ms
+	//OutputPwm();
 }
 
 void Shift() {
@@ -930,7 +938,7 @@ void Display_exe() {
 		shiftbyte[1] |= (1 << digitcount);
 		shiftbyte[0] = digit[digitcount];
 
-	PWM_exe(); //experimenteel 24jan
+		PWM_exe(); //experimenteel 24jan
 		Shift();
 
 		//hier stond de shift() voor 24jan
@@ -2274,6 +2282,12 @@ void Prg_up() { //volgende programmamode
 	case 7:
 		ProgramOutput(3);
 		break;
+	case 8:
+		ProgramOutput(4);
+		break;
+	case 9:
+		ProgramOutput(5);
+		break;
 		//8=output bezet; 9=output alarm 10=home sensor; 11=sensor
 	case 10:
 		ProgramSensors(0);
@@ -2582,16 +2596,24 @@ void Output_exe(int _out, byte _caller, bool _onoff) { //0=stepper, 1=servo 1 2=
 }
 void OutputSwitch(byte _out, bool _plusmin) {
 	//voorlopig hebben de outputs geen functies
-
-	Actie_exe(_plusmin);
-
+	switch (programfase) {
+	case 0:
+		Actie_exe(_plusmin);
+		break;
+	case 1: //instellen pwm duty cycle
+		Prg_OutputPwm(_out, _plusmin);
+		break;
+	case 2: //snelheid van pwm verandering
+		Prg_OutputPwmspeed(_out, _plusmin);
+		break;
+	}
 	DisplayShow(20);
 }
 void OutputActie(byte _out) {
-	//voorlopig hebben outputs geen functies alleen toggle
+	//aanzetten van de output
 	if (_out < 4) {
-		//shiftbyte[1] ^= (1 << (_out + 4));
-		outputonoff ^= (1 << (_out + 4));
+		outputonoff ^= (1 << _out);
+
 	}
 	else {
 		switch (_out) {
@@ -2605,36 +2627,133 @@ void OutputActie(byte _out) {
 	}
 	DisplayShow(18);
 }
+void OutputPwm() {
+	//clock called from timer_exe periode 10ms
+	//pwmdutycycle bepaald hoe hoog de led brand 0=niet 100 is voluit
+
+	for (byte i = 0; i < 4; i++) { //check alle 4 outputs
+
+
+		if (outputpwmspeed[i] > 0) {
+			//tijd aftellen
+			outputpwmspeedcount[i]++;
+			if (outputpwmspeedcount[i] > outputpwmspeed[i]) {
+				outputpwmspeedcount[i] = 0;
+
+				//timer afgelopen, duty cycle aanpassen, 2 opties, output staat aan of uit
+				//en nu wordt het pas echt ingewikkeld.....
+
+				if (outputonoff & (1 << i)) {  //led moet sterker gaan branden
+					if (pwmdutycycle[i] > (100 - pwmduty[i]))pwmdutycycle[i]--;
+				}
+				else { //led moet afzwakken naar 0
+					if (pwmdutycycle[i] < 100)pwmdutycycle[i]++;
+				}
+			}
+		}
+
+		else {
+
+			//geen timer voor inc en dec van de dutycycle ingesteld
+			if (outputonoff & (1 << i)) {
+
+				pwmdutycycle[i] = 100 - pwmduty[i]; //omgekeerd ingestelde waarde, bepaald hoe hoog de output staat. 0~100%
+			}
+			else {
+				pwmdutycycle[i] = 100; //
+			}
+		}
+	}
+}
 void ProgramOutput(byte _out) {
-	if (programfase > 1)programfase = 0;
+	switch (_out) {  //uitzondering geen instellinegen op de alarm en bezet output
+	case 4:
+		programfase = 0;
+		return;
+	case 5:
+		programfase = 0;
+		return;
+	}
+
+	if (programfase > 2)programfase = 0;
 	scrollmask = 0;
-	//hebben outputs wel een programmeerfunctie???
-	//dit kan misschien eenvoudiger bv. met een void 'noprograms'
+	switch (programfase) {
+	case 0:
+		Prg_end();  //veranderimgem opslaan
+		break;
+	case 1:
+		scrollmask = B0110;
+		break;
+	case 2:
+		scrollmask = B0110;
+		break;
+	}
 }
 void DisplayOutput(byte _out) {
 	//voorals nog hebben de outputs geen programmeerfuncties
-	digit[0] = Letter('o');
-
-	if (_out < 4) {
-		digit[1] = Cijfer(_out + 1);
-	}
-	else {
-		switch (_out) {
-		case 4:
-			//Bezet output op PIN 7 (PORTD7)
-			digit[1] = Letter('b');
-			break;
-		case 5:
-			//Alarm output op PIN3 (PORTD3)
-			digit[1] = Letter('A');
-			break;
+	DisplayClear();
+	switch (programfase) {
+	case 0:  //in bedrijf
+		digit[0] = Letter('o');
+		if (_out < 4) {
+			digit[1] = Cijfer(_out + 1);
 		}
+		else {
+			switch (_out) {
+			case 4:
+				//Bezet output op PIN 7 (PORTD7)
+				digit[1] = Letter('b');
+				break;
+			case 5:
+				//Alarm output op PIN3 (PORTD3)
+				digit[1] = Letter('A');
+				break;
+			}
+		}
+		//clear23; //zet de twee laatste digits uit
+		break;
+	case 1: //instellen duty cycle
+		digit[0] = Letter('d');
+		digit[1] = Letter('t');
+		DisplayNummer(pwmduty[_out], 23);
+		dots;
+		break;
+	case 2: //instellen dec en inc tijd, snelheid
+		DisplayNummer(outputpwmspeed[_out], 4);
+		break;
 	}
-	clear23; //zet de twee laatste digits uit
-
 	//	dots;
 	//	DisplayNummer(outputfunctie[_out], 23);
 }
+void Prg_OutputPwm(byte _out, bool _plusmin) {
+	byte _scrollsteps = ScrollSteps();
+	if (_plusmin) {
+		if (pwmduty[_out] < (101 - _scrollsteps))pwmduty[_out] += _scrollsteps;
+	}
+	else {
+		if (pwmduty[_out] > _scrollsteps - 1)pwmduty[_out] -= _scrollsteps;
+	}
+}
+byte ScrollSteps() {
+	byte _result = 1;
+	switch (scrollspeed) {
+	case 1:
+		_result = 10;
+		break;
+	}
+	return _result;
+}
+void Prg_OutputPwmspeed(byte _out, bool _plusmin) {
+	byte _scrollsteps = ScrollSteps();
+	if (_plusmin) {
+		if (outputpwmspeed[_out] < 10000 - _scrollsteps)outputpwmspeed[_out] += _scrollsteps;
+	}
+	else {
+		if (outputpwmspeed[_out] > _scrollsteps - 1)outputpwmspeed[_out] -= _scrollsteps;
+	}
+}
+
+
 void DisplayOutputkeuze(byte _output) {
 	//toont gekozen output in digit 2 en digit 3
 
@@ -2680,41 +2799,50 @@ void DisplayOutputkeuze(byte _output) {
 	}
 	dots;
 }
-
-
 void PWM_exe() {
-	//byte outputonoff; //bit0=output1 bit 4=outbezet bit 5 is out alarm
-	//byte pwmcount[8]; //duty cycle counter, de off tijd van het pwm signaal
-	//byte pwmduty[8] //instelling van de dutycycle per output (8= teveel, maar voorkomt vergissingen)
+	//	byte outputonoff; //bit0=output1 bit 4=outbezet bit 5 is out alarm
+	//	byte pwmcount[8]; //duty cycle counter, de off tijd van het pwm signaal
+	//	byte pwmduty[8]; //duty cycle van de ppwm voor de output EEPROM 80 instelling
+	//	byte pwmdutycycle[8]; //dutycycle van een output om dit moment
+	//	uint pwmspeed[8]; //snelheid van dec en inc van de dutycycle voor outputs  EEPROM 90 instelling
 
+	OutputPwm();
 
+	for (byte i = 0; i < 4; i++) { //alle outputs bekijken, voorlopig  nog niet bezet en alarm
 
+		if (pwmdutycycle[i] == 100) { //direct output laag zetten
+			shiftbyte[1] &= ~(1 << i + 4);
+		}
+		else 	if (pwmdutycycle[i] == 0) { //direct output hoog zetten
+			shiftbyte[1] |= (1 << i + 4);
+		}
+		else if (shiftbyte[1] & (1 << i + 4)) { // output heeft een pwm puls
+			//een hoge  dutycycle geeft een brede aan periode en een smalle uit periode
+			//een lage duty cycle geef een smalle aanperiode en een brede uit periode
+			//bij 50 is de breedte van aan en uit periodes gelijk.
 
-	for (byte i = 4; i < 8; i++) { //alle outputs bekijken
-		if (outputonoff & (1 << i)) { // output aan
-
-			if (shiftbyte[1] & (1 << i)) { //output hoog
-				shiftbyte[1] &= ~(1 << i); //output laag zetten 
-			}
-			else { //output staat laag
-				pwmcount[i]++;
-				if (pwmcount[i] > 10) { //% duty cycle
-					pwmcount[i] = 0;
-			shiftbyte[1] |= (1 << i); //zet output weer aan
-				}
+			pwmoncount[i]++;  //aan periode aftellen
+			if (pwmoncount[i] > (100 - pwmdutycycle[i])) { //breedte aan puls omgekeerd evenredig met de dutycycle
+				pwmoncount[i] = 0;
+				shiftbyte[1] &= ~(1 << (i + 4)); //output laag zetten 
 			}
 		}
-		else { //output uit
-			shiftbyte[1] &= ~(1 << i);
+		else { //output staat laag
+			pwmcount[i]++; //uit periode aftellen
+			if (pwmcount[i] > pwmdutycycle[i]) { //breedte uit periode evenredig aan duty
+				pwmcount[i] = 0;
+				shiftbyte[1] |= (1 << i + 4); //zet output weer aan
+			}
 		}
 	}
 }
 
 //Timers
-unsigned long verlopentijd;
+unsigned long verlopentijd; ///?????
 byte count = 0;
 void Timer_exe() {
 	//called door ISR van timer 2 iedere 10ms, voorlopig straks tijdschaal instelbaar maken.
+
 
 	for (byte i = 0; i < 8; i++) {  //8 timers
 		if (Timer & (1 << i)) { //timer aan of uit, i=dus nu de gekozen timer
