@@ -1320,7 +1320,8 @@ void SWon(byte _sw) {
 		//*****************************************SWITCH1****Actie knop*******
 	case 0: //switch 1
 		switch (actie) {
-		case 0: //common
+		case 0: //common actie ingesteld met start actie uitvoeren
+			autostart();
 			break;
 		case 1: //stepper		
 			if (programfase == 0) StepperActie(); //alleen positie wisselen in bedrijfsstand
