@@ -21,7 +21,7 @@
 NmraDcc  Dcc;
 
 //constanten
-#define maxdcc 511  //maximaal aantal dcc decoderadressen
+#define maxdcc 479  //maximaal aantal dcc decoderadressen
 #define dots digit[1]&=~(1<<7); //de punten in het display, aanzetten
 #define clear23 digit[2] = Cijfer(10); digit[3] = Cijfer(10); //laatste twee digits uit
 #define line23 digit[2]=Letter('-');digit[3]=Letter('-');
@@ -215,9 +215,9 @@ void Eeprom_write() {
 	if (stephomerichting == false)memreg &= ~(1 << 0);  //bit0=richting naar Home switch
 	if (EEPROM.read(10) != memreg)EEPROM.write(10, memreg);
 
-	//tbv.stappenmotor
-	EEPROM.put(100, stepper[0]); //checked automatisch of data is veranderd, alleen aanpassen als data veranderd is. spaart write cycles
-	EEPROM.put(110, stepper[1]);
+	//stappenmotor stops opslaan
+	
+	
 
 	//kan ook met update, weet nu niet of dit sneller gaat
 	if (EEPROM.read(11) != speedmaxfactor)EEPROM.write(11, speedmaxfactor);
@@ -257,7 +257,7 @@ void Eeprom_write() {
 		EEPROM.put(400 + (i * 10), servo2pos[i]);
 	}
 
-	//timers
+	//timers en ander 8 bits data array
 	for (byte i = 0; i < 8; i++) {
 		EEPROM.put(500 + (i * 10), timerontijd[i]);
 		EEPROM.put(600 + (i * 10), timerofftijd[i]);
@@ -269,6 +269,9 @@ void Eeprom_write() {
 		EEPROM.update(70 + i, timerscale[i]);  //10ms, 100ms of 1 seconde
 		EEPROM.update(80 + i, pwmduty[i]);  //dutyo cycle pwm outputs 1~100% (100==00)
 		EEPROM.put(900 + (i * 10), outputpwmspeed[i]); //snelheid van verandering van de pwm dutycycle
+
+		EEPROM.put(100 + (10*i), stepper[i]); //instellingen stops
+
 	}
 
 	Eeprom_read(); //data terug lezen.
@@ -318,9 +321,18 @@ void Eeprom_read() {
 		EEPROM.get(600 + (i * 10), timerofftijd[i]);
 		timercycles[i] = EEPROM.read(800 + i);
 
-		if (timerontijd[i] > 9999)timerontijd[i] = 33; //33x20ms??? = ongeveer 90x per minuut
-		if (timerofftijd[i] > 9999) timerofftijd[i] = 33;
-		if (timercycles[i] > 99)timercycles[i] = 0; //0=continue defaultwaarde
+
+
+		//1 voorbeeld maken op timer 1
+		if (i == 0) { //timer 1
+			if (timerontijd[0] > 9999)timerontijd[0] = 33; //33x20ms??? = ongeveer 90x per minuut
+			if (timerofftijd[0] > 9999) timerofftijd[0] = 1;
+		}
+		else {
+		if (timerontijd[i] > 9999)timerontijd[i] = 100; //33x20ms??? = ongeveer 90x per minuut
+		if (timerofftijd[i] > 9999) timerofftijd[i] = 100;
+		}
+	if (timercycles[i] > 99)timercycles[i] = 0; //0=continue defaultwaarde
 
 		for (byte op = 0; op < 6; op++) {
 			timeroutput[i][op] = EEPROM.read(700 + (i * 10) + op);
@@ -349,9 +361,9 @@ void Eeprom_read() {
 	stepbezetoutput = EEPROM.read(20); if (stepbezetoutput > 100)stepbezetoutput = 1; //1 moe dan bezet output worden, hier kunnen dus ook timers komen
 	stephomerichting = memreg & (1 << 0); // bit 0 = opgeslagen stand stephomerichting true is standaard	
 
-	for (byte i = 0; i < StepMaxStops; i++) {
+	for (byte i = 0; i < 8; i++) {
 		EEPROM.get((i * 10) + 100, stepper[i]); //gebruikt 8 bytes
-		if (stepper[i] > 9999 || stepper[i] == 0)stepper[i] = i * 100 + 50;
+		if (stepper[i] > 9999)stepper[i] = 50 +(i*300); //optie or stepper[i]==0 weggehaald
 	}
 	speedmaxfactor = EEPROM.read(11); //max speed
 	if (speedmaxfactor > 20) speedmaxfactor = 10; //10 snelheids stappen	
@@ -2047,11 +2059,6 @@ void Step_steps() {
 		if (stepfase > 7) stepfase = 0;
 	}
 	standstep++;
-
-	////hier moet een noodstop komen 
-	//if (standstep > stepper[1] + stepper[0] + 100) {
-	//	NoodStop();
-	//}
 
 	if (stepmovefase == 12) { //opweg naar doel.
 		if (standstep == standdoel) {
